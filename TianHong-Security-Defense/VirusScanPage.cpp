@@ -2101,6 +2101,8 @@ void VirusScanPage::createCustomWidget(QString desText)
 			pButtonLeft->setText("暂停扫描");
 			pButtonRight->setText("终止扫描");
 
+			// 标记进入准备阶段（收集文件列表期间），使终止扫描能立即响应
+			m_bScanPreparing = true;
 			showScanLoading("正在准备文件夹扫描...");
 
 			QFutureWatcher<QStringList>* fileListWatcher = new QFutureWatcher<QStringList>(this);
@@ -2108,6 +2110,39 @@ void VirusScanPage::createCustomWidget(QString desText)
 				QStringList allFiles = fileListWatcher->result();
 				fileListWatcher->deleteLater();
 				hideScanLoading();
+
+				// 准备期间用户点击了"终止扫描"：取消本次扫描并恢复初始状态
+				if (g_scanCancelRequested.load()) {
+					g_scanCancelRequested = false;
+					m_bScanPreparing = false;
+
+					pVirusTableModel->removeRows(0, pVirusTableModel->rowCount());
+					pScanProgressBar->reset();
+					slideProgressInOut(pScanProgressBar, false);
+					pVirusTable->setVisible(false);
+					pButtonLeft->setVisible(false);
+					pButtonRight->setVisible(false);
+					EngineMainTitle->setVisible(false);
+					pProgressDesc->setText("准备就绪\n");
+
+					QTimer::singleShot(500, this, [=]() {
+						if (this) {
+							pScanProgressBar->reset();
+							documentationButton->setEnabled(true);
+							spYaraEngineSwitch->setVisible(true);
+							spPEEngineSwitch->setVisible(true);
+							spSHA256EngineSwitch->setVisible(true);
+							spClamAVEngineSwitch->setVisible(true);
+							spHighSensitiveSwitch->setVisible(true);
+							spExtraPEEngineSwitch->setVisible(true);
+							pButtonDecrypt->setVisible(true);
+
+							EngineMainTitle->setVisible(true);
+							EngineMainTitle->setText("引擎设置");
+						}
+						});
+					return;
+				}
 
 				if (allFiles.isEmpty()) {
 					NewMessageBox("选择的文件夹中没有找到文件。", 4, 3);
@@ -2159,6 +2194,7 @@ void VirusScanPage::createCustomWidget(QString desText)
 				mScanResultClean = true;
 
 				g_scanCancelRequested = false;
+				m_bScanPreparing = false;
 				mScanState.store(ssRunning);
 				int threadCount = qMin(MAX_SCAN_THREAD, allFiles.count());
 				for (int i = 0; i < threadCount; i++) {
@@ -2368,6 +2404,7 @@ void VirusScanPage::createCustomWidget(QString desText)
 		pButtonRight->setText("终止扫描");
 
 		// ===== 唯一一次遮罩：在此期间并行预收集所有阶段的文件列表 =====
+		m_bScanPreparing = true;
 		showScanLoading("正在准备扫描...");
 
 		// 启动 3 个非进程阶段的文件收集（与进程文件收集并行）
@@ -2404,6 +2441,47 @@ void VirusScanPage::createCustomWidget(QString desText)
 				for (const auto& item : allFilesWithPid) {
 					allFiles.append(item.first);
 					allPids.push_back(item.second);
+				}
+
+				// 准备期间用户点击了"终止扫描"：取消本次扫描并恢复初始状态
+				if (g_scanCancelRequested.load()) {
+					g_scanCancelRequested = false;
+					m_bScanPreparing = false;
+					fileListWatcher->deleteLater();
+
+					if (m_bQuickScanMode) {
+						m_bQuickScanMode = false;
+						if (m_quickScanPhaseBar) m_quickScanPhaseBar->hide();
+					}
+
+					hideScanLoading();
+					pVirusTableModel->removeRows(0, pVirusTableModel->rowCount());
+					pScanProgressBar->reset();
+					slideProgressInOut(pScanProgressBar, false);
+					pVirusTable->setVisible(false);
+					pButtonLeft->setVisible(false);
+					pButtonRight->setVisible(false);
+					EngineMainTitle->setVisible(false);
+					pProgressDesc->setText("准备就绪\n");
+					if (mDrawer1) mDrawer1->setVisible(false);
+
+					QTimer::singleShot(500, this, [=]() {
+						if (this) {
+							pScanProgressBar->reset();
+							documentationButton->setEnabled(true);
+							spYaraEngineSwitch->setVisible(true);
+							spPEEngineSwitch->setVisible(true);
+							spSHA256EngineSwitch->setVisible(true);
+							spClamAVEngineSwitch->setVisible(true);
+							spHighSensitiveSwitch->setVisible(true);
+							spExtraPEEngineSwitch->setVisible(true);
+							pButtonDecrypt->setVisible(true);
+
+							EngineMainTitle->setVisible(true);
+							EngineMainTitle->setText("引擎设置");
+						}
+						});
+					return;
 				}
 
 				// 重新构建完整的 fileToPidsMap
@@ -2510,6 +2588,7 @@ void VirusScanPage::createCustomWidget(QString desText)
 				mScanResultClean = true;
 
 				g_scanCancelRequested = false;
+				m_bScanPreparing = false;
 				mScanState.store(ssRunning);
 				int threadCount = qMin(MAX_SCAN_THREAD, allFiles.count());
 				for (int i = 0; i < threadCount; i++) {
@@ -2840,6 +2919,45 @@ void VirusScanPage::createCustomWidget(QString desText)
 
 	// ========== 右按钮（终止/隔离/拦截） ==========
 	connect(pButtonRight, &ElaPushButton::clicked, this, [this]() {
+		if (mScanState == ssPrepared && m_bScanPreparing) {
+			// 准备阶段（收集文件列表期间）点击终止：立即取消准备，恢复初始状态
+			g_scanCancelRequested = true;
+			m_bScanPreparing = false;
+
+			if (m_bQuickScanMode) {
+				m_bQuickScanMode = false;
+				if (m_quickScanPhaseBar) m_quickScanPhaseBar->hide();
+			}
+
+			hideScanLoading();
+			pVirusTableModel->removeRows(0, pVirusTableModel->rowCount());
+			pScanProgressBar->reset();
+			slideProgressInOut(pScanProgressBar, false);
+			pVirusTable->setVisible(false);
+			pButtonLeft->setVisible(false);
+			pButtonRight->setVisible(false);
+			EngineMainTitle->setVisible(false);
+			pProgressDesc->setText("准备就绪\n");
+			if (mDrawer1) mDrawer1->setVisible(false);
+
+			QTimer::singleShot(500, this, [=]() {
+				if (this) {
+					pScanProgressBar->reset();
+					documentationButton->setEnabled(true);
+					spYaraEngineSwitch->setVisible(true);
+					spPEEngineSwitch->setVisible(true);
+					spSHA256EngineSwitch->setVisible(true);
+					spClamAVEngineSwitch->setVisible(true);
+					spHighSensitiveSwitch->setVisible(true);
+					spExtraPEEngineSwitch->setVisible(true);
+					pButtonDecrypt->setVisible(true);
+
+					EngineMainTitle->setVisible(true);
+					EngineMainTitle->setText("引擎设置");
+				}
+				});
+			return;
+		}
 		if (mScanState == ssRunning || mScanState == ssStopping || mScanState == ssStoppingPreparing) {
 			// 快速扫描模式终止：隐藏阶段指示器，恢复标准模式
 			if (m_bQuickScanMode) {

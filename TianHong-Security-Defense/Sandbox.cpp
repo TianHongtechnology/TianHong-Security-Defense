@@ -1295,10 +1295,18 @@ private:
         // Extra loose rule for obfuscated downloaders where the path is built from
         // $env:TEMP and may not contain the canonical directory names yet.
         auto any_exe_write = [](BR r) {
-            return r.action == "FileWrite" && EndsWith(ToLower(r.target), ".exe");
+            if (r.action != "FileWrite") return false;
+            std::string t = ToLower(r.target);
+            return EndsWith(t, ".exe") &&
+                   (Contains(t, "\\temp\\") || Contains(t, "\\appdata\\") ||
+                    Contains(t, "\\public\\") || Contains(t, "\\programdata\\"));
         };
         auto any_exe_run = [](BR r) {
-            return r.action == "ProcessCreate" && EndsWith(ToLower(r.target), ".exe");
+            if (r.action != "ProcessCreate") return false;
+            std::string t = ToLower(r.target);
+            return EndsWith(t, ".exe") &&
+                   (Contains(t, "\\temp\\") || Contains(t, "\\appdata\\") ||
+                    Contains(t, "\\public\\") || Contains(t, "\\programdata\\"));
         };
         rules_.push_back({"BSD/Trojan-Downloader.Win32.HttpDropper.Loose",
                           {{"NetworkConnect", http_dl},
@@ -2337,7 +2345,7 @@ private:
                           {{"IEXExecute", iex},
                            {"Base64Decode", b64},
                            {"ProcessCreate", ps_exec}},
-                          2, 80});
+                          3, 82});
 
         using BR = const BehaviorRecord&;
         auto js_dl = [](BR r) {
@@ -2348,14 +2356,27 @@ private:
         auto js_iex = [](BR r) {
             return r.action == "IEXExecute" || r.action == "Base64Decode";
         };
+        // Writing/opening an executable or script artifact, or writing into a
+        // non-standard user-writable location (temp/appdata/programdata/public).
         auto js_file = [](BR r) {
-            return r.action == "FileWrite" || r.action == "FileOpen";
+            if (r.action != "FileWrite" && r.action != "FileOpen") return false;
+            std::string t = ToLower(r.target);
+            return EndsWith(t, ".js") || EndsWith(t, ".vbs") || EndsWith(t, ".ps1") ||
+                   EndsWith(t, ".exe") || EndsWith(t, ".dll") || EndsWith(t, ".bat") ||
+                   EndsWith(t, ".cmd") || EndsWith(t, ".scr") || EndsWith(t, ".tmp") ||
+                   EndsWith(t, ".bin") || Contains(t, "\\temp\\") ||
+                   Contains(t, "\\appdata\\") || Contains(t, "\\programdata\\") ||
+                   Contains(t, "\\public\\") || Contains(t, "startup");
         };
+        // Running a script interpreter or a payload from a user-writable location.
         auto js_run = [](BR r) {
-            return r.action == "ProcessCreate";
-        };
-        auto js_reg = [](BR r) {
-            return r.action == "RegSetValue" || r.action == "RegRead" || r.action == "RegDelete";
+            if (r.action != "ProcessCreate") return false;
+            std::string t = ToLower(r.target);
+            return Contains(t, "wscript") || Contains(t, "cscript") ||
+                   Contains(t, "powershell") || Contains(t, "mshta") ||
+                   Contains(t, "regsvr32") || Contains(t, "rundll32") ||
+                   Contains(t, "cmd") || Contains(t, "\\temp\\") ||
+                   Contains(t, "\\appdata\\") || Contains(t, "\\programdata\\");
         };
         auto js_av = [](BR r) {
             return r.action == "RegSetValue" && Contains(ToLower(r.target), "defender");
@@ -2371,6 +2392,25 @@ private:
             return r.action == "BackupDeletion" || (r.action == "ProcessCreate" &&
                                                     Contains(ToLower(r.details), "vssadmin"));
         };
+        // Reading browser credential/session files (info-stealer signal).
+        auto js_cred_read = [](BR r) {
+            if (r.action != "FileRead") return false;
+            std::string t = ToLower(r.target);
+            return Contains(t, "login data") || Contains(t, "cookies") ||
+                   Contains(t, "web data") || Contains(t, "wallet") ||
+                   Contains(t, "autofill") || Contains(t, "logins.json") ||
+                   Contains(t, "key4.db") || Contains(t, "leveldb");
+        };
+        // Touching browser/credential-related registry keys.
+        auto js_cred_reg = [](BR r) {
+            if (r.action != "RegSetValue" && r.action != "RegRead" && r.action != "RegDelete")
+                return false;
+            std::string t = ToLower(r.target);
+            return Contains(t, "\\software\\") &&
+                   (Contains(t, "chrome") || Contains(t, "firefox") ||
+                    Contains(t, "edge") || Contains(t, "password") ||
+                    Contains(t, "credential"));
+        };
 
         rules_.push_back({"BSD/TrojanDownloader.JSDropper",
                           {{"NetworkConnect", js_dl},
@@ -2379,9 +2419,9 @@ private:
                           3, 85});
 
         rules_.push_back({"BSD/TrojanSpy.JSInfoStealer",
-                          {{"FileRead", [](BR r) { return r.action == "FileRead"; }},
+                          {{"FileRead", js_cred_read},
                            {"NetworkConnect", js_dl},
-                           {"RegSetValue", js_reg}},
+                           {"RegSetValue", js_cred_reg}},
                           3, 82});
 
         rules_.push_back({"BSD/Ransomware.JSRansom",
@@ -2402,7 +2442,7 @@ private:
                           {{"IEXExecute", js_iex},
                            {"Base64Decode", [](BR r) { return r.action == "Base64Decode"; }},
                            {"ProcessCreate", js_run}},
-                          2, 78});
+                          3, 78});
     }
 
     static Match MatchRule(const std::vector<BehaviorRecord>& records, const FamilyChain& rule) {
@@ -5766,811 +5806,6 @@ void JsRuntime::Execute(const std::string& code) {
     }
 }
 
-/* ============================================================
- *  Content fingerprint rules
- *
- *  Behavior-chain rules rely on the interpreter emitting proper
- *  BehaviorRecords. Heavily obfuscated scripts (e.g. _0x hex-array
- *  JS, or colon-padded VBS with embedded ZIP payloads) defeat the
- *  interpreter, so the chain detector sees nothing actionable.
- *  These content rules fingerprint the raw script content for known
- *  obfuscated stealer-dropper patterns and act as a fallback when
- *  behavior-chain detection produces no match.
- * ============================================================ */
-struct ContentRule {
-    std::string family;
-    std::function<bool(const std::string&)> matcher;
-    int severity = 80;
-};
-
-// Detect Windows shortcut (.lnk) binary by its header magic.
-// HeaderSize=0x4C 00 00 00 followed by LinkCLSID
-// {00021401-0000-0000-C000-000000000046} =
-// 01 14 02 00 00 00 00 00 C0 00 00 00 00 00 00 46
-static bool IsLnkContent(const std::string& s) {
-    if (s.size() < 20) return false;
-    const auto* p = reinterpret_cast<const unsigned char*>(s.data());
-    return p[0] == 0x4C && p[1] == 0x00 && p[2] == 0x00 && p[3] == 0x00 &&
-           p[4] == 0x01 && p[5] == 0x14 && p[6] == 0x02 && p[7] == 0x00 &&
-           p[12] == 0xC0 && p[19] == 0x46;
-}
-
-// Extract a compact ASCII string from LNK binary content. LNK stores
-// strings as UTF-16LE (char + 0x00), so we drop NUL bytes entirely and
-// collapse other non-printable bytes into single spaces. This avoids
-// alignment assumptions about where StringData begins in the file.
-static std::string ExtractAsciiFromUtf16(const std::string& s) {
-    std::string raw;
-    raw.reserve(s.size());
-    for (unsigned char c : s) {
-        if (c == 0x00) continue;                  // skip UTF-16 high byte
-        if (c >= 0x20 && c < 0x7f) {
-            raw.push_back(static_cast<char>(c));
-        } else {
-            raw.push_back(' ');
-        }
-    }
-    // Collapse runs of whitespace into a single space.
-    std::string out;
-    out.reserve(raw.size());
-    bool prevSpace = true;
-    for (char c : raw) {
-        if (c == ' ') {
-            if (!prevSpace) { out.push_back(' '); prevSpace = true; }
-        } else {
-            out.push_back(c);
-            prevSpace = false;
-        }
-    }
-    return out;
-}
-
-// True if the content is an HTA application: HTML wrapper with an
-// inline <script> block (VBScript/JScript) executed by mshta.exe.
-static bool IsHtaContent(const std::string& s) {
-    std::string low = ToLower(s);
-    if (!Contains(low, "<html") && !Contains(low, "<head") &&
-        !Contains(low, "<body") && !Contains(low, "<script")) return false;
-    return Contains(low, "language=\"vbscript\"") ||
-           Contains(low, "language='vbscript'") ||
-           Contains(low, "language=\"jscript\"") ||
-           Contains(low, "language='jscript'") ||
-           Contains(low, "language=\"javascript\"") ||
-           Contains(low, "<script>") ||
-           Contains(low, "mshta") ||
-           Contains(low, "hta:application");
-}
-
-static std::vector<ContentRule> BuildContentRules() {
-    std::vector<ContentRule> rules;
-
-    // JS stealer dropper: _0x hex-array obfuscation combined with
-    // hidden PowerShell execution, ADODB.Stream binary decoding, a
-    // base64 payload, and a .ps1 / CreateTextFile writer. This exact
-    // combination is characteristic of obfuscated JS stealers that
-    // decode an embedded PowerShell stealer and launch it hidden.
-    rules.push_back({"BSD/TrojanSpy.JSDropper.Stealer",
-        [](const std::string& s) -> bool {
-            std::string low = ToLower(s);
-            if (!Contains(low, "_0x")) return false;                 // hex-array obfuscation
-            if (!Contains(low, "powershell") || !Contains(low, "bypass") ||
-                !Contains(low, "hidden")) return false;              // hidden PowerShell launch
-            if (!Contains(low, "adodb")) return false;               // binary stream decode
-            if (!Contains(low, "bin.base64") && !Contains(low, "nodetypedvalue") &&
-                !Contains(low, "base64tostring")) return false;     // base64 payload handling
-            if (!Contains(low, ".ps1") && !Contains(low, "createtextfile")) return false; // dropper writer
-            return true;
-        }, 88});
-
-    // VBS stealer dropper: large embedded base64 ZIP payload
-    // (UEsDBBQ = base64 of PK\x03\x04) dropped via ADODB.Stream
-    // SaveToFile, then executed through Shell.Application
-    // ShellExecute, with a CreateTextFile/WriteLine launcher script.
-    rules.push_back({"BSD/TrojanSpy.VBSDropper.Stealer",
-        [](const std::string& s) -> bool {
-            std::string low = ToLower(s);
-            if (!Contains(s, "UEsDBBQ")) return false;              // ZIP magic in base64
-            if (!Contains(low, "savetofile")) return false;           // binary file drop
-            if (!Contains(low, "shellexecute") &&
-                !Contains(low, "shell.application")) return false;   // payload execution
-            if (!Contains(low, "createobject")) return false;        // COM object creation
-            if (!Contains(low, "createtextfile") &&
-                !Contains(low, "writeline")) return false;          // launcher creation
-            return true;
-        }, 88});
-
-    // ---------- HTA family (4 rules) ----------
-    // HTA dropper: WScript.Shell.Run/Exec launching cmd or powershell
-    // to download+execute a remote payload. Matches gate.hta-style
-    // samples that decode an obfuscated cmd /c powershell -File ... chain.
-    rules.push_back({"BSD/TrojanDownloader.HTADropper",
-        [](const std::string& s) -> bool {
-            if (!IsHtaContent(s)) return false;
-            std::string low = ToLower(s);
-            if (!Contains(low, "wscript.shell")) return false;
-            if (!Contains(low, "powershell") && !Contains(low, "cmd /c") &&
-                !Contains(low, "cmd.exe")) return false;
-            bool hasUrl = Contains(low, "http://") || Contains(low, "https://") ||
-                          Contains(low, "github.com") || Contains(low, "raw.github");
-            bool hasExec = Contains(low, ".run") || Contains(low, ".exec") ||
-                           Contains(low, "shellexecute");
-            return hasUrl && hasExec;
-        }, 86});
-
-    // HTA stealer: ADODB.Stream binary drop + execution via
-    // Shell.Application / ShellExecute, typical of stealers that
-    // download/decode a binary payload to disk and launch it.
-    rules.push_back({"BSD/TrojanSpy.HTAStealer",
-        [](const std::string& s) -> bool {
-            if (!IsHtaContent(s)) return false;
-            std::string low = ToLower(s);
-            if (!Contains(low, "adodb")) return false;
-            if (!Contains(low, "savetofile") && !Contains(low, "writetofile") &&
-                !Contains(low, "createtextfile")) return false;
-            if (!Contains(low, "shellexecute") &&
-                !Contains(low, "shell.application") &&
-                !Contains(low, "wscript.shell")) return false;
-            return Contains(low, "http://") || Contains(low, "https://") ||
-                   Contains(low, "github") || Contains(low, "temp");
-        }, 88});
-
-    // HTA obfuscated dropper: VBScript string-splitting obfuscation
-    // (Array/Join/Chr/StrReverse) feeding Execute/ExecuteGlobal.
-    // gate.hta is the reference sample for this pattern. The payload
-    // keywords themselves are reversed/fragmented, so we rely on the
-    // combination of Execute + multiple obfuscation primitives (which
-    // legitimate HTA demos never combine) rather than on plaintext
-    // executor names to keep false positives low.
-    rules.push_back({"BSD/Trojan-Obfuscated.HTA.Generic",
-        [](const std::string& s) -> bool {
-            if (!IsHtaContent(s)) return false;
-            std::string low = ToLower(s);
-            if (!Contains(low, "execute") && !Contains(low, "executeglobal")) return false;
-            int obf = 0;
-            if (Contains(low, "strreverse")) obf++;
-            if (Contains(low, "array(") && Contains(low, "join(")) obf++;
-            if (Contains(low, "chr(")) obf++;
-            if (Contains(low, "replace(")) obf++;
-            // Require at least two distinct obfuscation techniques -
-            // a single Chr() or Replace() call alone is too common in
-            // benign HTA samples to flag on its own.
-            if (obf < 2) return false;
-            // Require a large Array() payload (typical of real droppers
-            // that fragment a full script into dozens of pieces) OR an
-            // additional executor signal to anchor the verdict.
-            if (Contains(low, "array(") && Contains(low, "join(") &&
-                Contains(low, "chr(")) return true;              // gate.hta pattern
-            return Contains(low, "powershell") || Contains(low, "cmd /c") ||
-                   Contains(low, "wscript.shell") || Contains(low, "shellexecute");
-        }, 84});
-
-    // HTA webshell-style downloader: uses MSXML2.XMLHTTP /
-    // WinHttp.WinHttpRequest to fetch a remote payload and persist
-    // it via Scripting.FileSystemObject.
-    rules.push_back({"BSD/Trojan.HTAWebshell",
-        [](const std::string& s) -> bool {
-            if (!IsHtaContent(s)) return false;
-            std::string low = ToLower(s);
-            if (!Contains(low, "msxml2.xmlhttp") &&
-                !Contains(low, "winhttp.winhttprequest") &&
-                !Contains(low, "xmlhttprequest") &&
-                !Contains(low, "serverxmlhttp")) return false;
-            if (!Contains(low, "adodb") && !Contains(low, "filesystemobject") &&
-                !Contains(low, "createtextfile")) return false;
-            return Contains(low, "http://") || Contains(low, "https://");
-        }, 85});
-
-    // ---------- LNK family (4 rules) ----------
-    // LNK files store strings as UTF-16LE, so decode ASCII first.
-    //
-    // LNK dropper: shortcut invokes powershell/cmd with execution
-    // policy bypass + hidden window to download a remote payload.
-    // photo2.png.lnk.1 is the reference sample.
-    rules.push_back({"BSD/TrojanDownloader.LNKDropper",
-        [](const std::string& s) -> bool {
-            if (!IsLnkContent(s)) return false;
-            std::string asc = ExtractAsciiFromUtf16(s);
-            std::string low = ToLower(asc);
-            if (!Contains(low, "powershell") && !Contains(low, "cmd.exe") &&
-                !Contains(low, "wscript") && !Contains(low, "cscript")) return false;
-            bool hasBypass = Contains(low, "-ep bypass") ||
-                             Contains(low, "-executionpolicy bypass") ||
-                             Contains(low, "-ep bypass") ||
-                             Contains(low, "executionpolicy") && Contains(low, "bypass");
-            if (!hasBypass) return false;
-            bool hasHidden = Contains(low, "-windowstyle hidden") ||
-                             Contains(low, "-w hidden") ||
-                             Contains(low, "-w 1") ||
-                             Contains(low, "-windowstyle") && Contains(low, "hidden");
-            if (!hasHidden) return false;
-            return Contains(low, "iwr") || Contains(low, "invoke-webrequest") ||
-                   Contains(low, "downloadfile") || Contains(low, "net.webclient") ||
-                   Contains(low, "-outfile") || Contains(low, "start-bitstransfer") ||
-                   Contains(low, "http");
-        }, 88});
-
-    // LNK stealer: shortcut downloads a .ps1 payload to %TEMP% and
-    // executes it via the & call operator - classic stealer dropper.
-    rules.push_back({"BSD/TrojanSpy.LNKStealer",
-        [](const std::string& s) -> bool {
-            if (!IsLnkContent(s)) return false;
-            std::string asc = ExtractAsciiFromUtf16(s);
-            std::string low = ToLower(asc);
-            if (!Contains(low, "powershell")) return false;
-            bool hasDownload = Contains(low, "iwr") ||
-                               Contains(low, "invoke-webrequest") ||
-                               Contains(low, "downloadfile");
-            if (!hasDownload) return false;
-            bool hasTemp = Contains(low, "$env:temp") ||
-                           Contains(low, "%temp%") ||
-                           Contains(low, "env:temp");
-            if (!hasTemp) return false;
-            // Require either -OutFile or & execution to confirm dropper behavior.
-            return Contains(low, "-outfile") || Contains(low, "; &") ||
-                   Contains(low, "& $") || Contains(low, "invoke") ||
-                   Contains(low, "-command");
-        }, 88});
-
-    // LNK obfuscated: shortcut runs an encoded/base64 PowerShell
-    // command via -enc / -EncodedCommand / -e to hide its intent.
-    rules.push_back({"BSD/Trojan-Obfuscated.LNK.Generic",
-        [](const std::string& s) -> bool {
-            if (!IsLnkContent(s)) return false;
-            std::string asc = ExtractAsciiFromUtf16(s);
-            std::string low = ToLower(asc);
-            if (!Contains(low, "powershell")) return false;
-            bool hasEnc = Contains(low, " -enc") ||
-                          Contains(low, " -encodedcommand") ||
-                          Contains(low, " -e ") ||
-                          Contains(low, "-encodedcommand");
-            if (!hasEnc) return false;
-            // Require a hidden/windowstyle flag to avoid flagging
-            // legitimate signed-script shortcuts that use -enc.
-            return Contains(low, "hidden") || Contains(low, "-w 1") ||
-                   Contains(low, "-windowstyle");
-        }, 85});
-
-    // LNK disguised dropper: shortcut masquerades as a benign file
-    // (image/PDF/document) using a system icon resource while launching
-    // a script interpreter. Catches social-engineering stealer lures.
-    rules.push_back({"BSD/Trojan.LNKDisguised",
-        [](const std::string& s) -> bool {
-            if (!IsLnkContent(s)) return false;
-            std::string asc = ExtractAsciiFromUtf16(s);
-            std::string low = ToLower(asc);
-            bool hasScript = Contains(low, "powershell") ||
-                             Contains(low, "cmd.exe") ||
-                             Contains(low, "wscript") ||
-                             Contains(low, "cscript") ||
-                             Contains(low, "mshta");
-            if (!hasScript) return false;
-            bool hasDisguiseIcon = Contains(low, "imageres.dll") ||
-                                   Contains(low, "shell32.dll") ||
-                                   Contains(low, "shell32") ||
-                                   Contains(low, "imageres");
-            bool hasHidden = Contains(low, "hidden") ||
-                             Contains(low, "-windowstyle") ||
-                             Contains(low, "-w 1");
-            // Require both a disguise icon and a hidden/script flag to
-            // keep false positives low on normal shortcut files.
-            return hasDisguiseIcon && hasHidden;
-        }, 82});
-
-    // WinKiller MBR/DBR writer: raw content fingerprint for VBS/CMD/PS1
-    // scripts that attempt direct write to physical disk (MBR/DBR).
-    // This is a content-level fallback for cases where the interpreter
-    // cannot fully resolve COM object variable chains (e.g. Set shell =
-    // CreateObject("WScript.Shell") ... shell.Run "dd ... of=\\.\PhysicalDrive0").
-    // Any single MBR/DBR write attempt → instant detection (severity=100).
-    rules.push_back({"BSD/Trojan-Dropper.Win32.MBRWriter",
-        [](const std::string& s) -> bool {
-            std::string low = ToLower(s);
-
-            // Core signal: physicaldrive path present in script
-            if (!Contains(low, "physicaldrive") &&
-                !Contains(low, "device\\harddisk") &&
-                !Contains(low, "/dev/sd") &&
-                !Contains(low, "/dev/nvme") &&
-                !Contains(low, "/dev/rdisk")) return false;
-
-            // Write indicators (any one suffices)
-            bool hasWriteCmd =
-                Contains(low, " of=") ||               // dd output target
-                Contains(low, "out-file") ||            // PS Out-File
-                Contains(low, "set-content") ||        // PS Set-Content
-                Contains(low, "add-content") ||        // PS Add-Content
-                Contains(low, "openwrite") ||          // PS [IO.File]::OpenWrite
-                Contains(low, "[io.file]::create") ||  // PS [IO.File]::Create
-                Contains(low, "[system.io.file]::") || // PS .NET file API
-                Contains(low, "createfile") ||         // Win32 CreateFile
-                Contains(low, "deviceiocontrol") ||    // Win32 DeviceIoControl
-                Contains(low, "format ") ||           // format command
-                Contains(low, "format.com") ||
-                Contains(low, "fsutil") ||             // fsutil
-                Contains(low, "diskpart") ||           // diskpart
-                Contains(low, ".run") ||               // WScript.Shell.Run
-                Contains(low, ".exec") ||              // WScript.Shell.Exec
-                Contains(low, "shellexecute") ||       // ShellExecute
-                Contains(low, "savetofile") ||         // ADODB.Stream.SaveToFile
-                Contains(low, "createtextfile") ||     // FSO.CreateTextFile
-                Contains(low, "writeline") ||          // FSO.WriteLine
-                Contains(low, "write ") ||             // generic write
-                Contains(low, "dd ");                  // dd command
-
-            if (!hasWriteCmd) return false;
-
-            // Exclude pure read patterns (CreateFile with GENERIC_READ only)
-            // by checking there's no explicit "read-only" marker
-            if (Contains(low, "generic_read") &&
-                !Contains(low, "generic_write") &&
-                !Contains(low, " of=") &&
-                !Contains(low, "out-file") &&
-                !Contains(low, "savetofile")) {
-                return false;
-            }
-
-            return true;
-        }, 100});
-
-    return rules;
-}
-
-// ============================================================
-//  Obfuscated-script content fingerprint rules
-//
-//  These catch families of heavily-obfuscated samples that the
-//  behaviour-chain interpreter cannot fully deobfuscate. Each
-//  rule combines a *script-type anchor* with behaviour indicators
-//  strong enough to keep false positives low.
-//
-//  14 samples in Danger_To_Run are covered:
-//    - RC4/Base64 JS packer  → Trojan-Dropper.Script.JSPacker.RC4Dropper
-//    - Cyrillic-subst VBS    → Trojan-Dropper.VBS.CyrillicDropper
-//    - Danish-split VBS      → Trojan-Dropper.VBS.DanishDropper
-//    - JSON-loader JS family → Trojan-Downloader.Script.JSONLoader
-//    - Unicode-padding HTA/JS → Trojan-Obfuscated.HTA.UnicodePadded / Trojan-Obfuscated.JS.UnicodePadded
-// ============================================================
-
-// Case-insensitive pattern search that works with both UTF-8 and UTF-16LE.
-// For ASCII/UTF-8 content: lowercases a copy of the content and searches.
-// For UTF-16LE content: searches for (lowercase_char, 0x00) pairs.
-// Forward declarations for functions defined below
-static bool ContainsPattern(const std::string& s, const std::string& pattern);
-static bool IsUTF16LE(const std::string& s);
-static bool ContainsPatternCI(const std::string& s, const std::string& pattern) {
-    if (pattern.empty()) return false;
-    // Build a lowercased ASCII version of the pattern
-    std::string lowPattern;
-    lowPattern.reserve(pattern.size());
-    for (char c : pattern) {
-        lowPattern.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-    }
-    // For UTF-16LE content, use the order-preserving search
-    if (IsUTF16LE(s)) return ContainsPattern(s, lowPattern);
-    // For UTF-8/ASCII content, lowercase a copy and do raw search
-    std::string lowContent;
-    lowContent.reserve(s.size());
-    for (char c : s) {
-        lowContent.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-    }
-    return lowContent.find(lowPattern) != std::string::npos;
-}
-
-// Detect the JSON-data-loader family (samples using a constructor-style
-// function with obfuscated namespace names ending in "UUU" padding
-// that build a base64/RC4 decoded payload with CPU feature lists.
-static bool IsJSONLoaderJS(const std::string& s) {
-    if (s.size() > 10 * 1024 * 1024) return false;
-    std::string low = ToLower(s);
-    // Require a "use <name>" loader directive or JSON:BEGIN marker.
-    bool hasLoaderDirective = Contains(low, "\"use ") && Contains(low, "uuuu");
-    bool hasJSONBegin = Contains(low, "${json:begin}") || Contains(low, "json:begin");
-    if (!hasLoaderDirective && !hasJSONBegin) return false;
-    // Require CPU-extension feature list (signature of this loader family).
-    bool hasCPUList = Contains(low, "aesni") || Contains(low, "bmi") ||
-                      Contains(low, "f16c") || Contains(low, "fma") ||
-                      Contains(low, "movbe") || Contains(low, "sha");
-    return hasCPUList;
-}
-
-// Detect Unicode-dead-code padding (repeated long non-ASCII string
-// concatenations into a variable — common anti-analysis noise layer).
-// Works with both UTF-8 and UTF-16LE encoded files.
-static bool HasUnicodePadding(const std::string& s) {
-    // Look for repeated string concat pattern with long non-ASCII literals.
-    if (s.size() < 10000) return false;
-    if (s.size() > 20 * 1024 * 1024) return false;  // Guard against huge files
-
-    // Detect UTF-16LE by BOM (FF FE) or by alternating byte pattern
-    bool isUTF16LE = (s.size() >= 2 &&
-                      (unsigned char)s[0] == 0xFF && (unsigned char)s[1] == 0xFE);
-    if (!isUTF16LE && s.size() >= 4) {
-        // Heuristic: check if ~50% of bytes are zero (UTF-16LE ASCII chars)
-        int zeroCount = 0;
-        for (size_t i = 0; i < std::min(s.size(), (size_t)4096); ++i) {
-            if ((unsigned char)s[i] == 0) ++zeroCount;
-        }
-        if (zeroCount > 1500) isUTF16LE = true;  // >37% zeros suggests UTF-16LE
-    }
-
-    if (isUTF16LE) {
-        // In UTF-16LE: ASCII chars are (char, 0x00), non-ASCII are (low, high)
-        // Look for long runs of non-zero bytes (non-ASCII characters)
-        int highRunLen = 0;
-        for (size_t i = 0; i + 1 < s.size(); i += 2) {
-            unsigned char lo = (unsigned char)s[i];
-            unsigned char hi = (i + 1 < s.size()) ? (unsigned char)s[i+1] : 0;
-            if (lo != 0 || hi != 0) {
-                ++highRunLen;
-                if (highRunLen >= 10) return true;  // 10+ consecutive non-ASCII chars
-            } else {
-                highRunLen = 0;
-            }
-        }
-        return false;
-    } else {
-        // UTF-8: look for long runs of high bytes (>=0x80)
-        int highRunLen = 0;
-        for (unsigned char c : s) {
-            if (c >= 0x80) {
-                ++highRunLen;
-                if (highRunLen > 30) return true;
-            } else {
-                highRunLen = 0;
-            }
-        }
-        return false;
-    }
-}
-
-// Detect DK-string split obfuscation in VBS (words split with "ballas"
-// marker, e.g. "Gballast-Random" → "Get-Random").
-static bool HasDanishSplitObf(const std::string& s) {
-    if (s.size() > 5 * 1024 * 1024) return false;
-    // Count occurrences of the characteristic marker using case-insensitive search.
-    int ballasCount = 0;
-    size_t pos = 0;
-    while ((pos = s.find("ballas", pos)) != std::string::npos) {
-        ++ballasCount; ++pos;
-    }
-    if (ballasCount < 20) return false;
-    // Verify it's reconstructing real PS/VBS commands (case-insensitive).
-    return ContainsPatternCI(s, "get-random") || ContainsPatternCI(s, "new-guid") ||
-           ContainsPatternCI(s, "start-sleep") || ContainsPatternCI(s, "out-null") ||
-           ContainsPatternCI(s, "activist") || ContainsPatternCI(s, "wscript.shell") ||
-           ContainsPatternCI(s, "filesystemobject") || ContainsPatternCI(s, "powershell");
-}
-
-// Detect RC4+Base64 JS packer targeting PowerShell execution.
-static bool IsRC4Base64Packer(const std::string& s) {
-    if (s.size() > 5 * 1024 * 1024) return false;
-    bool hasRC4Func = ContainsPatternCI(s, "_0x") && ContainsPatternCI(s, "fromcharcode") &&
-                      ContainsPatternCI(s, "decodeuri");
-    if (!hasRC4Func) return false;
-    return ContainsPatternCI(s, "powershell") || ContainsPatternCI(s, "wscript.shell") ||
-           ContainsPatternCI(s, "cmd.exe") || ContainsPatternCI(s, ".exec");
-}
-
-// Detect VBS with heavy comment-based obfuscation (prose comments
-// interleaved with code) that creates WScript.Shell and executes PS.
-static bool IsCommentObfVBS(const std::string& s) {
-    if (s.size() > 5 * 1024 * 1024) return false;
-    bool hasVBS = ContainsPatternCI(s, "createobject") && ContainsPatternCI(s, "wscript.shell") &&
-                  ContainsPatternCI(s, "execute");
-    if (!hasVBS) return false;
-    int commentLines = 0, codeLines = 0;
-    std::istringstream iss(s);
-    std::string line;
-    while (std::getline(iss, line)) {
-        std::string trimmed = Trim(line);
-        if (trimmed.empty()) continue;
-        if (!trimmed.empty() && trimmed[0] == '\'') ++commentLines;
-        else ++codeLines;
-    }
-    return commentLines > codeLines / 4 && commentLines > 5;
-}
-
-// Check if string is UTF-16LE encoded (BOM FF FE or high zero-byte ratio)
-static bool IsUTF16LE(const std::string& s) {
-    if (s.size() >= 2 && (unsigned char)s[0] == 0xFF && (unsigned char)s[1] == 0xFE)
-        return true;
-    if (s.size() < 64) return false;
-    int zeroCount = 0;
-    for (size_t i = 0; i < std::min(s.size(), (size_t)4096); ++i) {
-        if ((unsigned char)s[i] == 0) ++zeroCount;
-    }
-    // Use integer math: zeroCount > sample_size / 4
-    size_t sampleSize = std::min(s.size(), (size_t)4096);
-    return zeroCount * 4 > (int)sampleSize;
-}
-
-// Search for an ASCII pattern in a string, handling both UTF-8 and UTF-16LE
-static bool ContainsPattern(const std::string& s, const std::string& pattern) {
-    if (pattern.empty()) return false;
-    // Try raw byte search first (works for UTF-8)
-    if (s.find(pattern) != std::string::npos) return true;
-    // Try UTF-16LE search: each ASCII char becomes (char, 0x00)
-    if (!IsUTF16LE(s)) return false;
-    // Scan the UTF-16LE stream for contiguous character pairs matching the pattern
-    size_t plen = pattern.size();
-    size_t si = 0;  // stream index (always even for UTF-16LE char boundaries)
-    size_t pi = 0;  // pattern index
-    while (si + 1 < s.size() && pi < plen) {
-        unsigned char target = static_cast<unsigned char>(pattern[pi]);
-        if ((unsigned char)s[si] == target && (unsigned char)s[si + 1] == 0x00) {
-            ++pi;  // matched this character, move to next
-        }
-        si += 2;  // advance to next UTF-16LE char in stream
-    }
-    return pi >= plen;  // all pattern characters matched in order
-}
-
-static std::vector<ContentRule> BuildExtraContentRules() {
-    std::vector<ContentRule> rules;
-
-    // RC4 + Base64 JS packer that decodes and executes hidden PowerShell.
-    rules.push_back({"BSD/Trojan-Dropper.Script.JSPacker.RC4Dropper",
-        [](const std::string& s) -> bool {
-            return IsRC4Base64Packer(s);
-        }, 90});
-
-    // VBS comment-obfuscated dropper: heavy prose comments (Danish/Norwegian)
-    // interleaved with code that creates WScript.Shell and executes
-    // reconstructed PowerShell via Execute(). No high-byte chars needed.
-    rules.push_back({"BSD/Trojan-Dropper.VBS.CommentObfDropper",
-        [](const std::string& s) -> bool {
-            return IsCommentObfVBS(s);
-        }, 88});
-
-    // Danish-string-split VBS: "ballas" marker splits real PowerShell
-    // identifiers; produces a dropper that builds and executes an encoded
-    // PS command via WScript.Shell. Signed with a legitimate cert to
-    // evade AMSI/script logging.
-    rules.push_back({"BSD/Trojan-Dropper.VBS.DanishDropper",
-        [](const std::string& s) -> bool {
-            if (!HasDanishSplitObf(s)) return false;
-            // Require at least one executed command after reconstruction.
-            return ContainsPatternCI(s, "wscript.shell") || ContainsPatternCI(s, "execute") ||
-                   ContainsPatternCI(s, "powershell") || ContainsPatternCI(s, "activist");
-        }, 92});
-
-    // JSON-data-loader JS family: uses a constructor loader pattern with
-    // obfuscated namespace, CPU-feature lists, and decodes a secondary
-    // payload that performs file/registry/network operations.
-    rules.push_back({"BSD/Trojan-Downloader.Script.JSONLoader",
-        [](const std::string& s) -> bool {
-            return IsJSONLoaderJS(s);
-        }, 88});
-
-    // Unicode-padded HTA: dead-code padding (repeated long non-ASCII
-    // strings concatenated in loops) with WScript shell execution.
-    rules.push_back({"BSD/Trojan-Obfuscated.HTA.UnicodePadded",
-        [](const std::string& s) -> bool {
-            if (!IsHtaContent(s)) return false;
-            if (!HasUnicodePadding(s)) return false;
-            return ContainsPatternCI(s, "wscript.shell") || ContainsPatternCI(s, "executeglobal") ||
-                   ContainsPatternCI(s, "shellexecute") || ContainsPatternCI(s, "powershell") ||
-                   ContainsPatternCI(s, "adodb") || ContainsPatternCI(s, "xmlhttp");
-        }, 85});
-
-    // Unicode-padded JS (non-HTA): same padding pattern but in pure JS.
-    rules.push_back({"BSD/Trojan-Obfuscated.JS.UnicodePadded",
-        [](const std::string& s) -> bool {
-            if (IsHtaContent(s)) return false;  // already caught by HTA rule
-            if (!HasUnicodePadding(s)) return false;
-            std::string low = ToLower(s);
-            // Must have a real script signal beyond just padding.
-            return ContainsPattern(s, "wscript.shell") || ContainsPattern(s, "activexobject") ||
-                   ContainsPattern(s, "createobject") || ContainsPattern(s, "powershell") ||
-                   ContainsPattern(s, "adodb") || ContainsPattern(s, "xmlhttp") ||
-                   ContainsPattern(s, "adodb.stream") || ContainsPattern(s, "filesystemobject");
-        }, 85});
-
-    // Massive Unicode dead-code padding JS (no ASCII keywords at all).
-    // Pure noise padding designed to bloat analysis — detect by size + encoding.
-    rules.push_back({"BSD/Trojan-Obfuscated.JS.UnicodeDeadCode",
-        [](const std::string& s) -> bool {
-            if (s.size() < 5 * 1024 * 1024) return false;  // At least 5MB
-            if (s.size() > 50 * 1024 * 1024) return false;
-            // Detect UTF-16LE
-            bool isUTF16LE = (s.size() >= 2 &&
-                              (unsigned char)s[0] == 0xFF && (unsigned char)s[1] == 0xFE);
-            if (!isUTF16LE && s.size() >= 64) {
-                int zeroCount = 0;
-                for (size_t i = 0; i < std::min(s.size(), (size_t)4096); ++i) {
-                    if ((unsigned char)s[i] == 0) ++zeroCount;
-                }
-                if (zeroCount <= (int)s.size() * 0.25) return false;
-            }
-            // For UTF-16LE: check that most chars are non-ASCII (>75%)
-            long long totalChars = 0, nonASCII = 0;
-            size_t scanLimit = std::min(s.size(), (size_t)1024 * 1024);
-            for (size_t i = 2; i + 1 < scanLimit; i += 2) {
-                ++totalChars;
-                if ((unsigned char)s[i] != 0 || (unsigned char)s[i+1] != 0)
-                    ++nonASCII;
-            }
-            return totalChars > 0 && nonASCII * 3 > totalChars;  // >75% non-ASCII
-        }, 80});
-
-    // Cyrillic/Unicode substitution cipher JS: character map object
-    // (e.g. waxf3={...}) that maps non-ASCII chars to ASCII, used to
-    // encode COM object names and commands. The decoded payload may not
-    // contain readable ASCII keywords — detect the mapping pattern itself.
-    rules.push_back({"BSD/Trojan-Obfuscated.JS.CyrillicCipher",
-        [](const std::string& s) -> bool {
-            if (s.size() > 5 * 1024 * 1024) return false;
-            if (!Contains(s, "{") || !Contains(s, "}")) return false;
-
-            // Detect UTF-16LE
-            bool isUTF16LE = (s.size() >= 2 &&
-                              (unsigned char)s[0] == 0xFF && (unsigned char)s[1] == 0xFE);
-            if (!isUTF16LE && s.size() >= 4) {
-                int zeroCount = 0;
-                for (size_t i = 0; i < std::min(s.size(), (size_t)4096); ++i) {
-                    if ((unsigned char)s[i] == 0) ++zeroCount;
-                }
-                if (zeroCount > 1500) isUTF16LE = true;
-            }
-
-            int cyrillicCount = 0;
-            if (isUTF16LE) {
-                // UTF-16LE: Cyrillic U+0400-U+04FF = bytes (0x00-0xFF, 0x04)
-                for (size_t i = 0; i + 1 < s.size(); i += 2) {
-                    unsigned char lo = (unsigned char)s[i];
-                    unsigned char hi = (unsigned char)s[i+1];
-                    if (hi == 0x04 && lo >= 0x00 && lo <= 0xFF) {
-                        ++cyrillicCount;
-                    }
-                }
-            } else {
-                // UTF-8: Cyrillic U+0400-U+04FF = 0xD0-0xD1 + 0x80-0xBF
-                for (size_t i = 0; i + 1 < s.size(); ++i) {
-                    if ((unsigned char)s[i] >= 0xD0 && (unsigned char)s[i] <= 0xD1 &&
-                        (unsigned char)s[i+1] >= 0x80 && (unsigned char)s[i+1] <= 0xBF) {
-                        ++cyrillicCount;
-                    }
-                }
-            }
-            if (cyrillicCount < 10) return false;
-            // Must have cipher machinery: a mapping function with charAt or similar
-            bool hasDecoderFunc = ContainsPattern(s, "charAt") ||
-                                  ContainsPattern(s, "charCodeAt") ||
-                                  ContainsPattern(s, "fromcharcode");
-            if (hasDecoderFunc) return true;
-            // Also accept large cyrillic map with string concat
-            if (cyrillicCount >= 30 && ContainsPattern(s, "+=")) return true;
-            // Detect waxf3/AjG style mapping object pattern
-            if (cyrillicCount >= 50 && ContainsPattern(s, "function")) return true;
-            return false;
-        }, 88});
-
-    // RC4 hex-array JS packer without CPU feature list (simpler variant).
-    // Uses _0xXXXX function with fromCharCode + decodeURIComponent chain
-    // to decode and execute payloads.
-    rules.push_back({"BSD/Trojan-Dropper.JS.HexArray",
-        [](const std::string& s) -> bool {
-            if (s.size() > 5 * 1024 * 1024) return false;
-            // _0x function with hex-array access pattern
-            bool has0xFunc = ContainsPatternCI(s, "_0x") && ContainsPatternCI(s, "fromcharcode");
-            if (!has0xFunc) return false;
-            // Has powershell or wscript execution target
-            return ContainsPatternCI(s, "powershell") || ContainsPatternCI(s, "wscript.shell") ||
-                   ContainsPatternCI(s, "cmd.exe") || ContainsPatternCI(s, "decodeuri");
-        }, 88});
-
-    // Massive _0x hex-array JS packer with switch-case VM decoder.
-    // Uses dozens of _0xXXXX variables concatenated into one huge blob,
-    // then decoded via a switch-based virtual machine (ScriptEngine, charAt, etc).
-    rules.push_back({"BSD/Trojan-Dropper.JS.SwitchVM",
-        [](const std::string& s) -> bool {
-            if (s.size() > 5 * 1024 * 1024) return false;
-            std::string low = ToLower(s);
-            // Count _0xXXXX variable declarations (hex array content)
-            int varCount = 0;
-            size_t pos = 0;
-            while ((pos = low.find("_0x", pos)) != std::string::npos) {
-                // Make sure it's a variable name (_0x + 6 hex chars)
-                if (pos + 7 < s.size() &&
-                    isxdigit(static_cast<unsigned char>(s[pos+3])) &&
-                    isxdigit(static_cast<unsigned char>(s[pos+4])) &&
-                    isxdigit(static_cast<unsigned char>(s[pos+5])) &&
-                    isxdigit(static_cast<unsigned char>(s[pos+6]))) {
-                    ++varCount;
-                }
-                ++pos;
-            }
-            if (varCount < 10) return false;
-            // Must have VM-like patterns: switch/case, charAt, ScriptEngine, or eval
-            bool hasVM = Contains(low, "switch") || Contains(low, "case") ||
-                         Contains(low, "scriptengine") || Contains(low, "eval(") ||
-                         Contains(low, "charcodeat") || Contains(low, "fromcharcode");
-            // Also check for huge array concatenation pattern
-            bool hasConcat = Contains(low, "_0x") && Contains(low, "+_0x");
-            return hasVM && hasConcat;
-        }, 90});
-
-    // VBS with WScript.Shell + PowerShell string reconstruction via
-    // string splitting and concatenation (no comment-obfuscation, no
-    // ballas marker — uses different splitting technique).
-    rules.push_back({"BSD/Trojan-Dropper.VBS.PSReconstruct",
-        [](const std::string& s) -> bool {
-            if (s.size() > 5 * 1024 * 1024) return false;
-            bool hasWS = ContainsPatternCI(s, "wscript.shell");
-            bool hasPS = ContainsPatternCI(s, "powershell") || ContainsPatternCI(s, "start-sleep") ||
-                         ContainsPatternCI(s, "get-random") || ContainsPatternCI(s, "new-guid");
-            bool hasExec = ContainsPatternCI(s, ".run(") || ContainsPatternCI(s, ".run ") ||
-                           ContainsPatternCI(s, "call ") || ContainsPatternCI(s, "execute");
-            bool hasFSO = ContainsPatternCI(s, "filesystemobject") || ContainsPatternCI(s, "createobject");
-            return hasWS && hasPS && (hasExec || hasFSO);
-        }, 90});
-
-    // VBS with string-split CreateObject (e.g. "S"&"CRipt"&"ing".file"&"system"&"object")
-    // followed by .Run or .Execute — heavy variable-name obfuscation + dead code.
-    rules.push_back({"BSD/Trojan-Dropper.VBS.StringSplit",
-        [](const std::string& s) -> bool {
-            if (s.size() > 5 * 1024 * 1024) return false;
-            // Count "X"&"Y" or "X"+"Y" split patterns (VBS uses &) — search raw bytes
-            int splitCount = 0;
-            size_t pos = 0;
-            while ((pos = s.find("\"&\"", pos)) != std::string::npos) {
-                ++splitCount; ++pos;
-            }
-            pos = 0;
-            while ((pos = s.find("\"+\"", pos)) != std::string::npos) {
-                ++splitCount; ++pos;
-            }
-            if (splitCount < 5) return false;
-            // Must have CreateObject + execution (case-insensitive, UTF-16LE-safe)
-            bool hasCreateObj = ContainsPatternCI(s, "createobject") || ContainsPatternCI(s, "set ");
-            bool hasExec = ContainsPatternCI(s, ".run(") || ContainsPatternCI(s, ".run ") ||
-                           ContainsPatternCI(s, "execute") || ContainsPatternCI(s, "call ");
-            // Must have FSO/specialfolder or .js file target
-            bool hasFileOp = ContainsPatternCI(s, "getspecialfolder") || ContainsPatternCI(s, ".js") ||
-                             ContainsPatternCI(s, "filesystemobject") || ContainsPatternCI(s, "openstream");
-            return hasCreateObj && (hasExec || hasFileOp);
-        }, 88});
-
-    // JS with simple string concatenation to build WScript/Shell names
-    // (e.g. "WScript.Sh"+"ell") — basic obfuscation bypass.
-    rules.push_back({"BSD/Trojan.JS.StringConcatObf",
-        [](const std::string& s) -> bool {
-            if (s.size() > 5 * 1024 * 1024) return false;
-            std::string low = ToLower(s);
-            // Look for quoted string concatenation pattern: "abc"+"def"
-            int concatCount = 0;
-            size_t pos = 0;
-            while ((pos = low.find("\"+\"", pos)) != std::string::npos) {
-                ++concatCount; ++pos;
-            }
-            pos = 0;
-            while ((pos = low.find("'+'", pos)) != std::string::npos) {
-                ++concatCount; ++pos;
-            }
-            if (concatCount < 3) return false;
-            // Must target script execution
-            return Contains(low, "wscript") || Contains(low, "powershell") ||
-                   Contains(low, "scripting") || Contains(low, "activexobject");
-        }, 82});
-
-    // JS/VBS XOR hex-decoder dropper: function with fromCharCode + parseInt
-    // hex string, XOR key, reading own script file to extract encoded payload.
-    // Classic self-extracting dropper pattern.
-    rules.push_back({"BSD/Trojan-Dropper.JS.XORHex",
-        [](const std::string& s) -> bool {
-            if (s.size() > 5 * 1024 * 1024) return false;
-            bool hasXORDecode = ContainsPatternCI(s, "fromcharcode") && ContainsPatternCI(s, "parseInt") &&
-                                ContainsPatternCI(s, "substr") && ContainsPatternCI(s, "^");
-            if (!hasXORDecode) return false;
-            // Must target script execution
-            return ContainsPatternCI(s, "cmd.exe") || ContainsPatternCI(s, "wscript") ||
-                   ContainsPatternCI(s, "powershell") || ContainsPatternCI(s, "createobject") ||
-                   ContainsPatternCI(s, "scripting") || ContainsPatternCI(s, "activexobject") ||
-                   ContainsPatternCI(s, "openstream") || ContainsPatternCI(s, "deletes.");
-        }, 90});
-
-    return rules;
-}
 class Sandbox::Impl {
 public:
     Impl() {}
@@ -6578,25 +5813,6 @@ public:
     DetectionResult Analyze(const std::string& script_content) {
         DetectionResult res;
         try {
-            // Early content fingerprint check for heavily-obfuscated families
-            // that the behaviour-chain interpreter cannot handle. This avoids
-            // spending time (and risking crashes) on scripts we can already
-            // classify by static signature.
-            {
-                static const auto extra_rules = BuildExtraContentRules();
-                for (const auto& cr : extra_rules) {
-                    if (cr.matcher(script_content)) {
-                        res.malicious = true;
-                        res.family = cr.family;
-                        res.severity_score = cr.severity;
-                        res.triggered_rules.push_back(cr.family + " content pattern matched");
-                        res.execution_log.push_back(
-                            "Content fingerprint matched: " + cr.family);
-                        return res;
-                    }
-                }
-            }
-
             VirtualEnvironment env;
             BehaviorRecorder recorder(env);
             std::unordered_map<std::string, std::string> globals;
@@ -6655,35 +5871,8 @@ public:
             }
 
             if (matches.empty()) {
-                // Fallback: content fingerprint detection for heavily
-                // obfuscated scripts that the interpreter cannot fully
-                // deobfuscate (e.g. _0x hex-array JS, colon-padded VBS
-                // with embedded ZIP payloads).
-                static const auto content_rules = BuildContentRules();
-                static const auto extra_rules = BuildExtraContentRules();
-                std::vector<ContentRule> all_rules = content_rules;
-                all_rules.insert(all_rules.end(), extra_rules.begin(), extra_rules.end());
-                for (const auto& cr : all_rules) {
-                    if (cr.matcher(cleaned)) {
-                        res.malicious = true;
-                        res.family = cr.family;
-                        res.severity_score = cr.severity;
-                        res.triggered_rules.push_back(cr.family +
-                            " content pattern matched");
-                        res.execution_log = std::move(log);
-                        for (const auto& r : recorder.Records()) {
-                            std::ostringstream oss;
-                            oss << "[" << r.timestamp << "] " << r.action
-                                << " target=" << r.target << " details="
-                                << r.details << " pid=" << r.pid;
-                            if (r.parent_id > 0) oss << " parent=" << r.parent_id;
-                            res.execution_log.push_back(oss.str());
-                        }
-                        res.execution_log.push_back(
-                            "Content fingerprint matched: " + cr.family);
-                        return res;
-                    }
-                }
+                // 行为链无匹配 → 判定为清洁。静态内容指纹检测已迁移至
+                // BatchScan（ScriptDetectionEngine），此处不再重复。
                 res.malicious = false;
                 res.family = "BSD/Clean";
                 res.severity_score = 0;

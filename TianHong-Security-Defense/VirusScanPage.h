@@ -97,6 +97,8 @@ public:
     int m_quickScanCumulativeScanned = 0;       // 已完成阶段的累计扫描数（当前阶段的起始偏移）
     int m_quickScanPhase0Count = 0;             // 阶段0（进程扫描）的文件数
 
+    bool m_bScanPreparing = false;              // 是否处于扫描准备阶段（收集文件列表期间），用于准备阶段立即响应终止扫描
+
     void showQuickScanPhaseBar(bool show);
     void updateQuickScanPhaseCard(int index, const QString& status, bool scanning);
     void setQuickScanPhaseDone(int index, int threatCount);

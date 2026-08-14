@@ -40,6 +40,7 @@
 #include <cctype>
 
 #include "Sandbox.h"
+#include "BatchScan.h"
 
 // clamav
 typedef cl_error_t(*cl_init_type)(unsigned int initoptions);
@@ -4756,7 +4757,9 @@ static bool DetectPowerShellObfuscation(const std::string& cmdLine, std::string&
     return false;
 }
 
-// 使用 Sandbox 分析命令行内容
+// 使用 BatchScan 分析命令行内容（静态内容指纹 + 语言检测器启发式）。
+// 原静态指纹规则已从 Behavior Sandbox 迁移至 BatchScan，命令行路径需
+// 同步改走 ScriptDetectionEngine 以确保迁移后检测不丢失。
 static ScriptSandbox::DetectionResult AnalyzeCommandLineWithSandbox(const std::string& content)
 {
     ScriptSandbox::DetectionResult result = { false, "Clean", 0, {}, {} };
@@ -4764,9 +4767,20 @@ static ScriptSandbox::DetectionResult AnalyzeCommandLineWithSandbox(const std::s
     try {
         // 限制分析长度，避免过长命令导致性能问题
         std::string limited = content.substr(0, 8192);
-        result = ScriptSandbox::Sandbox().Analyze(limited);
+
+        ScriptDetectionEngine engine;
+        RiskReport report = engine.scan(limited);
+
+        if (report.isMalicious) {
+            result.malicious = true;
+            result.family = report.family;
+            result.severity_score = report.riskScore;
+            result.triggered_rules = report.reasons;
+            result.execution_log.push_back("BatchScan: " + report.family +
+                " (risk=" + std::to_string(report.riskScore) + ")");
+        }
     } catch (...) {
-        // Sandbox 异常不影响主流程
+        // 分析异常不影响主流程
     }
 
     return result;
