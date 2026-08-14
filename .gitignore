@@ -65,6 +65,13 @@ ClamAV/
 elastic-ref/
 **/elastic-ref/
 
+# ===== Rules Directory (files too large, keep structure description only) =====
+# 参见 rules/README.md 获取规则文件说明和获取方式
+rules/
+
+# ===== External Binaries (third-party DLLs, too large to commit) =====
+ExternalBinaries/
+
 # ===== NuGet Packages =====
 packages/
 **/packages/

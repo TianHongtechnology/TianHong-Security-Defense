@@ -276,6 +276,28 @@ ALERT_RESPONSE / PROCESS_CHECK / PROCESS_CHECK_RESP
 
 > **说明**：每次切换平台后，需要重新构建受影响的子项目。
 
+### 资源文件说明
+
+程序运行依赖 `Resources\DataBase\` 目录下的规则文件和模型文件，可通过替换以下文件来自定义行为：
+
+| 文件 | 用途 | 可配置方式 |
+|------|------|-----------|
+| `Malware.yarac` / `MalwareMemory.yarac` | YARA 恶意软件签名库（编译版） | 替换为自定义 `.yarac` 文件，或改为 `.yara` 源码文件（需同时设置 `IS_LOAD_YARAC` 为 `FALSE`） |
+| `Heur.data`（及 `.base`、`.extra` 配套文件） | LightGBM PE 行为分析模型 | 训练新模型后替换整组文件 |
+| `ClamAVDataBase\` | ClamAV 病毒库（目录） | 通过 `freshclam` 更新，或直接替换整个目录 |
+
+> `Resources\BinaryFiles\` 目录下的其他文件（如 `TianHongDefense32/64.dll`、`TianHongInjector32.exe` 等）为程序运行时必需组件，请勿随意删除。
+
+### 外部依赖 DLL
+
+程序还需要以下外部 DLL（MSVC 运行时、Qt、第三方库等），这些文件**不会由编译步骤自动生成**，需从根目录的 `ExternalBinaries\` 文件夹手动复制到程序输出目录（与 `TianHong-Security-Defense.exe` 同级）：
+
+```powershell
+xcopy /E /I /Y "ExternalBinaries\*" "x64\Release\"
+```
+
+> **⚠️ 免责声明**：`ExternalBinaries\` 下的所有 PE 文件（.dll、.exe）均来自第三方开源项目或系统组件，仅供本项目运行时依赖使用。作者不对这些文件的来源安全性、无毒状态做任何保证，使用者应自行评估风险，建议在虚拟机中运行。详见 [ExternalBinaries/README.md](ExternalBinaries/README.md)。
+
 ### 运行说明
 
 1. 确保测试签名已启用
