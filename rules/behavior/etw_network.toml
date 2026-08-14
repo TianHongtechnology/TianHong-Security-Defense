@@ -1,0 +1,188 @@
+# ── ETW Network 动态规则：ETW 事件补充检测
+# rule_id 范围：22000-22005
+# 来源：Microsoft-Windows-TCPIP ETW 事件
+# 通过 IOCTL_BEHAVIOR_ETW_NETWORK_EVENT 转发到主驱动
+# 这些规则补充 Network 驱动的 WFP 检测，覆盖更多场景
+
+[rule]
+rule_id = 22000
+name = "ETW C2 Connection Pattern"
+description = "ETW 检测到的 C2 连接模式（多端口扫描后连接）"
+severity = "high"
+threat_class = "CommandAndControl:ETWC2Pattern"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 2
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_C2_CONNECT"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_UNKNOWN_PORT"
+weight = 20.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+[rule]
+rule_id = 22001
+name = "ETW DNS Exfiltration"
+description = "ETW 检测到的 DNS 数据外传（高频 DNS 查询）"
+severity = "high"
+threat_class = "Exfiltration:DNSExfiltration"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 3
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_SUSPICIOUS_DNS"
+weight = 25.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_PROCESS_NETWORK"
+weight = 20.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+[rule]
+rule_id = 22002
+name = "ETW Long-Lived C2 Channel"
+description = "ETW 检测到的持久 C2 通道（长时间连接）"
+severity = "critical"
+threat_class = "CommandAndControl:PersistentC2"
+version = 1
+
+[rule.detection]
+threshold = 60.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_LONG_CONNECTION"
+weight = 30.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_C2_CONNECT"
+weight = 35.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_HIDDEN_WINDOW"
+weight = 15.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_UNSIGNED"
+weight = 15.0
+required = false
+
+---
+
+[rule]
+rule_id = 22003
+name = "ETW Network Reconnaissance"
+description = "ETW 检测到的网络侦察（多目标端口扫描）"
+severity = "medium"
+threat_class = "Discovery:NetworkRecon"
+version = 1
+
+[rule.detection]
+threshold = 35.0
+min_match_count = 2
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_UNKNOWN_PORT"
+weight = 20.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_PROCESS_NETWORK"
+weight = 15.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_HIDDEN_WINDOW"
+weight = 10.0
+required = false
+
+---
+
+[rule]
+rule_id = 22004
+name = "ETW C2 + Injection Chain"
+description = "ETW C2 连接 + 注入指标组合（高级威胁）"
+severity = "critical"
+threat_class = "CommandAndControl:C2WithInjection"
+version = 1
+
+[rule.detection]
+threshold = 65.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_C2_CONNECT"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_INJECTION_CHAIN"
+weight = 40.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_UNSIGNED"
+weight = 15.0
+required = false
+
+---
+
+[rule]
+rule_id = 22005
+name = "ETW Suspicious Network + Script"
+description = "ETW 可疑网络活动 + 脚本解释器组合"
+severity = "high"
+threat_class = "Execution:ScriptNetwork"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 2
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_C2_CONNECT"
+weight = 30.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_SCRIPT_INTERPRETER"
+weight = 20.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false

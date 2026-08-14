@@ -1,0 +1,379 @@
+# ── R0 HIPS 动态规则补充包 - 注册表部分（来自 dllmain.cpp R3 规则对比补全）
+# 覆盖 R3 dllmain.cpp 中有但 R0 内嵌规则未完全覆盖的场景
+# rule_id 范围：9301-9320
+# 注意：所有规则只覆盖内嵌规则中缺失的操作类型（DELETE）或路径（Wow64/HKCU变体）
+
+# ── Rule 9301: CLSID 完整路径 SET（非 InprocServer32 子项）──
+# dllmain.cpp 规则35：内嵌规则#50-51只覆盖InprocServer32子项，此规则覆盖CLSID顶层及非InprocServer32子项
+[rule]
+rule_id = 9301
+name = "CLSID Full Path Set (Non-Inproc)"
+description = "拦截 CLSID 注册表完整路径修改（排除已覆盖的 InprocServer32） (T1546.015)"
+severity = "high"
+threat_class = "Persistence/CLSIDHijack"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Classes\\CLSID\\*\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9302: HKCU CLSID 完整路径 SET ──
+[rule]
+rule_id = 9302
+name = "CLSID HKCU Full Path Set"
+description = "拦截用户级 CLSID 注册表完整路径修改 (T1546.015)"
+severity = "high"
+threat_class = "Persistence/CLSIDHijack"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Classes\\CLSID\\*\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9303: CLSID DELETE 系统级 ──
+# 内嵌规则只有SET，补充DELETE拦截
+[rule]
+rule_id = 9303
+name = "CLSID Delete System"
+description = "拦截系统级 CLSID 注册表删除操作 (T1546.015)"
+severity = "high"
+threat_class = "Persistence/CLSIDHijack"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_DELETE"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Classes\\CLSID\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9304: CLSID DELETE 用户级 ──
+[rule]
+rule_id = 9304
+name = "CLSID Delete User"
+description = "拦截用户级 CLSID 注册表删除操作 (T1546.015)"
+severity = "high"
+threat_class = "Persistence/CLSIDHijack"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_DELETE"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Classes\\CLSID\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9305: UAC Bypass ms-settings ──
+# dllmain.cpp 规则28：通过ms-settings路径绕过UAC
+[rule]
+rule_id = 9305
+name = "UAC Bypass ms-settings"
+description = "拦截通过ms-settings路径绕过UAC (T1548.003)"
+severity = "high"
+threat_class = "PrivilegeEscalation/UACBypass"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\*_Classes\\ms-settings\\shell\\open\\command"
+value = "*"
+flag = "SEF_ALL_BLOCKED"
+
+---
+
+# ── Rule 9306: 用户级文件关联修改 ──
+# dllmain.cpp 规则27：后缀名关联项修改
+# 内嵌规则#36-37覆盖Classes\\*通配，但不精确匹配后缀名模式
+[rule]
+rule_id = 9306
+name = "HKCU File Association Modify"
+description = "拦截用户级文件后缀名关联修改 (T1562.001)"
+severity = "medium"
+threat_class = "Persistence/FileAssociation"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\*_Classes\\*\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9307: IFEO 映像劫持 DELETE ──
+# 内嵌规则#7, #73只有SET，补充DELETE拦截
+[rule]
+rule_id = 9307
+name = "IFEO Debugger Delete"
+description = "拦截IFEO映像劫持配置删除 (T1574.002)"
+severity = "high"
+threat_class = "Persistence/IFEO"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_DELETE"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\*"
+value = "*"
+flag = "SEF_UNSIGNED_BLOCKED"
+
+---
+
+# ── Rule 9308: NoSetFolders 禁用文件资源管理器 ──
+# dllmain.cpp 规则10，内嵌规则未覆盖
+[rule]
+rule_id = 9308
+name = "Disable File Explorer (NoSetFolders)"
+description = "拦截禁用文件资源管理器注册表修改 (T1562.001)"
+severity = "high"
+threat_class = "DefenseEvasion/DisableExplorer"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "NoSetFolders"
+flag = "SEF_ALL_BLOCKED"
+
+---
+
+# ── Rule 9309: Wow6432Node WMI CIMOM ──
+# dllmain.cpp 规则40：WMI 32位兼容路径
+[rule]
+rule_id = 9309
+name = "WMI CIMOM Wow64 HKCU"
+description = "拦截用户级Wow64 WMI CIMOM配置修改 (T1546.003)"
+severity = "high"
+threat_class = "Persistence/WMI"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Wow6432Node\\Microsoft\\WBEM\\CIMOM\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9310: Run 系列 DELETE 操作补全 ──
+# 内嵌规则只有SET，补充DELETE拦截
+[rule]
+rule_id = 9310
+name = "HKCU Run Delete"
+description = "拦截用户级自启动注册表项删除 (T1037)"
+severity = "medium"
+threat_class = "Persistence/RunKeyDelete"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_DELETE"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9311: HKLM Run DELETE ──
+[rule]
+rule_id = 9311
+name = "HKLM Run Delete"
+description = "拦截系统级自启动注册表项删除 (T1037)"
+severity = "medium"
+threat_class = "Persistence/RunKeyDelete"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_DELETE"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9312: Winlogon Shell DELETE ──
+# 内嵌规则#5-6只有SET，补充DELETE
+[rule]
+rule_id = 9312
+name = "Winlogon Shell Delete"
+description = "拦截Winlogon Shell注册表项删除 (T1547.001)"
+severity = "high"
+threat_class = "Persistence/WinlogonHijack"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_DELETE"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"
+value = "Shell"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9313: Winlogon Userinit DELETE ──
+[rule]
+rule_id = 9313
+name = "Winlogon Userinit Delete"
+description = "拦截Winlogon Userinit注册表项删除 (T1547.001)"
+severity = "high"
+threat_class = "Persistence/WinlogonHijack"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_DELETE"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"
+value = "Userinit"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9314: AppCompatFlags DELETE ──
+# 内嵌规则#40-42只有SET，补充DELETE
+[rule]
+rule_id = 9314
+name = "AppCompatFlags Custom Delete"
+description = "拦截应用兼容性垫片自定义配置删除 (T1546.011)"
+severity = "medium"
+threat_class = "Persistence/AppCompatFlags"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_DELETE"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Custom\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9315: TaskCache DELETE ──
+# 内嵌规则#60只有SET，补充DELETE
+[rule]
+rule_id = 9315
+name = "TaskCache Delete"
+description = "拦截计划任务缓存删除 (T1053.005)"
+severity = "medium"
+threat_class = "Persistence/ScheduledTask"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_DELETE"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Schedule\\TaskCache\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9316: SilentProcessExit DELETE ──
+# 内嵌规则#64只有SET，补充DELETE
+[rule]
+rule_id = 9316
+name = "SilentProcessExit Delete"
+description = "拦截静默进程退出监控配置删除 (T1546.012)"
+severity = "medium"
+threat_class = "Persistence/SilentProcessExit"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_DELETE"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\SilentProcessExit\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9317: ETW/WMI DELETE ──
+# 内嵌规则#91只有SET，补充DELETE
+[rule]
+rule_id = 9317
+name = "ETW WMI Config Delete"
+description = "拦截ETW/WMI事件追踪配置删除 (T1562.002)"
+severity = "high"
+threat_class = "DefenseEvasion/ETWDisable"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_DELETE"
+path = "\\REGISTRY\\MACHINE\\SYSTEM\\CurrentControlSet\\Control\\WMI\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9318: WINEVT DELETE ──
+# 内嵌规则#92只有SET，补充DELETE
+[rule]
+rule_id = 9318
+name = "ETW WINEVT Config Delete"
+description = "拦截WINEVT事件通道配置删除 (T1562.002)"
+severity = "high"
+threat_class = "DefenseEvasion/ETWDisable"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_DELETE"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WINEVT\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9319: BCD DELETE ──
+# 内嵌规则#86只有SET，补充DELETE
+[rule]
+rule_id = 9319
+name = "BCD Boot Config Delete"
+description = "拦截BCD启动配置删除 (T1547.001)"
+severity = "high"
+threat_class = "Persistence/BCDHijack"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_DELETE"
+path = "\\REGISTRY\\MACHINE\\BCD00000000\\*"
+value = "*"
+flag = "SEF_ALL_BLOCKED"
+
+---
+
+# ── Rule 9320: ControlSet001 Service SET ──
+# dllmain.cpp 规则31：通过ControlSet001直接修改服务配置
+[rule]
+rule_id = 9320
+name = "ControlSet001 Service Modify"
+description = "拦截通过ControlSet001修改服务配置 (T1543.003)"
+severity = "high"
+threat_class = "Persistence/ServiceControlSet"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SYSTEM\\ControlSet001\\Services\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"

@@ -1,0 +1,1110 @@
+# ── 补充指标定义 ──
+# 包含 kernel 中定义但尚未在 TOML 中声明的指标
+
+[indicator]
+id = 4
+name = "BA_IND_PROC_FROM_DOWNLOADS_DIR"
+description = "进程从下载目录执行（%USERPROFILE%\\Downloads）"
+category = 1
+base_score = 10.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\Downloads\\", "\\downloads\\"]
+negate = false
+
+---
+
+[indicator]
+id = 5
+name = "BA_IND_FILE_CREATE_DRIVER"
+description = "在系统目录创建驱动文件"
+category = 2
+base_score = 30.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "file_ext_eq"
+fields = ["file_ext"]
+values = [".sys"]
+negate = false
+
+---
+
+[indicator]
+id = 8
+name = "BA_IND_FILE_INF_AUTORUN"
+description = "创建 autorun.inf 文件"
+category = 2
+base_score = 25.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["file_path"]
+values = ["\\autorun.inf"]
+negate = false
+
+---
+
+[indicator]
+id = 13
+name = "BA_IND_FILE_DATA_STAGED"
+description = "数据打包 staging（外传前准备）"
+category = 2
+base_score = 25.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "file_ext_in_list"
+fields = ["file_ext"]
+values = [".zip", ".rar", ".7z", ".tar", ".gz", ".cab"]
+negate = false
+
+---
+
+[indicator]
+id = 15
+name = "BA_IND_FILE_HOSTS_MODIFY"
+description = "修改 hosts 文件"
+category = 2
+base_score = 25.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["file_path"]
+values = ["\\Windows\\System32\\drivers\\etc\\hosts"]
+negate = false
+
+---
+
+[indicator]
+id = 18
+name = "BA_IND_FILE_MASS_SYSTEM_DELETE"
+description = "批量删除系统文件"
+category = 2
+base_score = 40.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 27
+name = "BA_IND_FILE_DPAPI_MASTER_KEY"
+description = "访问 DPAPI 主密钥文件"
+category = 2
+base_score = 40.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["file_path"]
+values = ["\\AppData\\Roaming\\Microsoft\\Protect\\",
+          "\\AppData\\Local\\Microsoft\\Protect\\",
+          "\\AppData\\Roaming\\Microsoft\\Crypto\\RSA\\MachineKeys\\"]
+negate = false
+
+---
+
+[indicator]
+id = 29
+name = "BA_IND_PROC_ACCOUNT_DISCOVERY"
+description = "账户发现：枚举本地/域账户"
+category = 1
+base_score = 20.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\net.exe", "\\net1.exe"]
+negate = false
+
+---
+
+[indicator]
+id = 32
+name = "BA_IND_PROC_SYSTEM_SHUTDOWN"
+description = "系统关机/重启命令执行"
+category = 1
+base_score = 35.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\shutdown.exe", "\\shutdown.bat"]
+negate = false
+
+---
+
+[indicator]
+id = 34
+name = "BA_IND_FILE_BULK_WRITE"
+description = "短时间内批量文件写入（勒索软件加密行为）"
+category = 2
+base_score = 40.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 36
+name = "BA_IND_FILE_FAKE_DIR_DROP"
+description = "伪装目录投放可执行文件（银狐特征）"
+category = 2
+base_score = 30.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["file_dir"]
+values = ["\\drivers\\", "\\Fonts\\", "\\Help\\", "\\Logs\\", "\\Temp\\"]
+negate = false
+
+---
+
+[indicator]
+id = 37
+name = "BA_IND_FILE_TEMP_RANDOM_NAME_EXE"
+description = "临时目录随机文件名可执行文件（银狐特征）"
+category = 2
+base_score = 30.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\Temp\\", "\\tmp\\"]
+negate = false
+
+---
+
+[indicator]
+id = 39
+name = "BA_IND_MEM_OPEN_SYSTEM_PROCESS"
+description = "打开系统级进程句柄（LSASS/csrss 等）"
+category = 3
+base_score = 30.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["target_process"]
+values = ["\\lsass.exe", "\\csrss.exe", "\\wininit.exe", "\\winlogon.exe",
+          "\\services.exe", "\\svchost.exe", "\\system"]
+negate = false
+
+---
+
+[indicator]
+id = 41
+name = "BA_IND_MEM_OPEN_REMOTE_THREAD"
+description = "打开远程线程句柄（CREATE_THREAD 权限）"
+category = 3
+base_score = 25.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "desired_access_has_flag"
+fields = ["desired_access"]
+values = ["0x0002"]
+negate = false
+
+---
+
+[indicator]
+id = 42
+name = "BA_IND_PROC_VSSADMIN_SHADOW_DELETE"
+description = "vssadmin delete shadows 删除卷影副本"
+category = 1
+base_score = 35.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\vssadmin.exe"]
+negate = false
+
+---
+
+[indicator]
+id = 43
+name = "BA_IND_FILE_SELF_LOADING"
+description = "自加载 DLL 规避（进程目录创建同名 DLL）"
+category = 2
+base_score = 35.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 45
+name = "BA_IND_MSHTA_EXECUTION"
+description = "mshta.exe 执行 HTA/脚本（T1218.005）"
+category = 1
+base_score = 35.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\mshta.exe"]
+negate = false
+
+---
+
+[indicator]
+id = 46
+name = "BA_IND_REGSVR32_EXECUTION"
+description = "regsvr32.exe 执行 scriptlet（T1218.003）"
+category = 1
+base_score = 35.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\regsvr32.exe"]
+negate = false
+
+---
+
+[indicator]
+id = 49
+name = "BA_IND_MEM_PROCESS_HOLLOWING"
+description = "进程空心化：创建挂起 + 写入 + 远程线程恢复"
+category = 3
+base_score = 65.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 51
+name = "BA_IND_MEM_INJECTION_CHAIN"
+description = "注入链：跨进程写入 + 远程线程创建组合"
+category = 3
+base_score = 60.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 53
+name = "BA_IND_MEM_DIRECT_SYSCALL"
+description = "直接 Syscall 绕过 R3 hook"
+category = 3
+base_score = 40.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 54
+name = "BA_IND_MEM_INDIRECT_SYSCALL"
+description = "间接 Syscall 绕过 R3 hook"
+category = 3
+base_score = 35.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 56
+name = "BA_IND_MEM_ETW_REMOTE_ALLOC_EXECUTABLE"
+description = "ETW TI：远程可执行内存分配"
+category = 3
+base_score = 30.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 57
+name = "BA_IND_MEM_ETW_REMOTE_PROTECT_EXECUTABLE"
+description = "ETW TI：远程内存保护改为可执行"
+category = 3
+base_score = 25.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 58
+name = "BA_IND_MEM_ETW_REMOTE_WRITE_MEMORY"
+description = "ETW TI：远程内存写入"
+category = 3
+base_score = 25.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 59
+name = "BA_IND_MEM_ETW_REMOTE_QUEUE_APC"
+description = "ETW TI：远程 APC 插入"
+category = 3
+base_score = 35.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 60
+name = "BA_IND_MEM_ETW_REMOTE_SET_THREAD_CONTEXT"
+description = "ETW TI：远程线程上下文修改"
+category = 3
+base_score = 35.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 61
+name = "BA_IND_MEM_ETW_REMOTE_MAP_VIEW_EXECUTABLE"
+description = "ETW TI：远程可执行映射视图"
+category = 3
+base_score = 35.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 62
+name = "BA_IND_MEM_ETW_ALLOC_TO_PROTECT_CHAIN"
+description = "ETW TI：非可执行分配后改为可执行"
+category = 3
+base_score = 30.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 63
+name = "BA_IND_MEM_ETW_WRITE_TO_PROTECT_CHAIN"
+description = "ETW TI：写入后改为可执行保护"
+category = 3
+base_score = 30.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 64
+name = "BA_IND_PROC_RAISE_HARD_ERROR"
+description = "NtRaiseHardError：R3 层调用蓝屏"
+category = 1
+base_score = 90.0
+is_dynamic = true
+condition_type = "driver_managed"
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 65
+name = "BA_IND_PROC_SET_CRITICAL"
+description = "RtlSetProcessIsCritical：设置关键进程"
+category = 1
+base_score = 85.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 66
+name = "BA_IND_PROC_APC_INJECTION"
+description = "NtQueueApcThread：跨进程 APC 注入"
+category = 1
+base_score = 40.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 67
+name = "BA_IND_PROC_MAP_SECTION"
+description = "NtMapViewOfSection：跨进程内存映射注入"
+category = 1
+base_score = 40.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 68
+name = "BA_IND_MEM_VM_WRITE_VM_OPERATE"
+description = "原子权限组合：VM_WRITE + VM_OPERATION"
+category = 3
+base_score = 40.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 69
+name = "BA_IND_MEM_VM_OPER_CREATE_THREAD"
+description = "原子权限组合：VM_OPERATION + CREATE_THREAD"
+category = 3
+base_score = 40.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 70
+name = "BA_IND_MEM_VM_OPER_DUP_HANDLE"
+description = "原子权限组合：VM_OPERATION + DUP_HANDLE"
+category = 3
+base_score = 40.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 71
+name = "BA_IND_FILE_BYOVD_DRIVER_LOAD"
+description = "自带漏洞驱动加载"
+category = 2
+base_score = 50.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 72
+name = "BA_IND_FILE_DISK_RAW_ACCESS"
+description = "原始磁盘访问（PhysicalDrive）"
+category = 2
+base_score = 35.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["file_path"]
+values = ["\\PhysicalDrive0", "\\PhysicalDrive1", "\\\\.\\PhysicalDrive"]
+negate = false
+
+---
+
+[indicator]
+id = 73
+name = "BA_IND_FILE_BOOT_SECTOR"
+description = "引导扇区写入"
+category = 2
+base_score = 50.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["file_path"]
+values = ["\\Boot\\", "\\bootmgr", "\\BCD"]
+negate = false
+
+---
+
+[indicator]
+id = 74
+name = "BA_IND_DISK_MBR_WRITE"
+description = "MBR 写入"
+category = 2
+base_score = 50.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 75
+name = "BA_IND_PROC_CRITICAL_PROCESS_KILL"
+description = "终止关键系统进程（csrss/explorer/system）"
+category = 1
+base_score = 60.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 76
+name = "BA_IND_TASKKILL_SECURITY"
+description = "taskkill targeting 安全工具进程"
+category = 1
+base_score = 40.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\taskkill.exe"]
+negate = false
+
+---
+
+[indicator]
+id = 77
+name = "BA_IND_CERTUTIL_DOWNLOAD"
+description = "certutil -decode/-urlcache 下载载荷"
+category = 1
+base_score = 35.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\certutil.exe"]
+negate = false
+
+---
+
+[indicator]
+id = 78
+name = "BA_IND_BITSADMIN_TRANSFER"
+description = "bitsadmin /transfer 下载载荷"
+category = 1
+base_score = 35.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\bitsadmin.exe"]
+negate = false
+
+---
+
+[indicator]
+id = 79
+name = "BA_IND_NET_USER_MODIFY"
+description = "net user 添加/修改账户"
+category = 1
+base_score = 30.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\net.exe", "\\net1.exe"]
+negate = false
+
+---
+
+[indicator]
+id = 80
+name = "BA_IND_SVCHOST_ANOMALY"
+description = "svchost.exe 异常父进程"
+category = 1
+base_score = 40.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 81
+name = "BA_IND_ICACLS_MODIFY"
+description = "icacls 权限修改"
+category = 1
+base_score = 30.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\icacls.exe"]
+negate = false
+
+---
+
+[indicator]
+id = 87
+name = "BA_IND_MSIEXEC_SILENT_INSTALL"
+description = "msiexec /quiet /i 静默安装"
+category = 1
+base_score = 35.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\msiexec.exe"]
+negate = false
+
+---
+
+[indicator]
+id = 88
+name = "BA_IND_WMI_PERSISTENCE"
+description = "WMI 事件订阅持久化"
+category = 1
+base_score = 40.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 89
+name = "BA_IND_NTDLL_UNHOOK"
+description = "ntdll.dll 卸载钩子"
+category = 4
+base_score = 50.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 90
+name = "BA_IND_NTDLL_REMAP"
+description = "ntdll.dll 重映射"
+category = 4
+base_score = 50.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 91
+name = "BA_IND_NTDLL_PATH_ANOMALY"
+description = "ntdll.dll 从非系统路径加载"
+category = 4
+base_score = 55.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = []
+negate = false
+# 非 \Windows\System32\ntdll.dll 路径
+
+---
+
+[indicator]
+id = 92
+name = "BA_IND_MAVINJECT_INJECTION"
+description = "mavinject.exe 远程线程注入"
+category = 1
+base_score = 45.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\mavinject.exe"]
+negate = false
+
+---
+
+[indicator]
+id = 93
+name = "BA_IND_CMSTP_EXECUTION"
+description = "CMSTP INF 脚本执行"
+category = 1
+base_score = 45.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\cmstp.exe"]
+negate = false
+
+---
+
+[indicator]
+id = 94
+name = "BA_IND_MSDT_EXECUTION"
+description = "msdt.exe 诊断包执行"
+category = 1
+base_score = 45.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\msdt.exe"]
+negate = false
+
+---
+
+[indicator]
+id = 95
+name = "BA_IND_CONTROL_PANEL_ITEM"
+description = "CPL 文件执行"
+category = 1
+base_score = 35.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\control.exe"]
+negate = false
+
+---
+
+[indicator]
+id = 96
+name = "BA_IND_SIGNED_BINARY_PROXY"
+description = "签名二进制代理执行"
+category = 1
+base_score = 50.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\mimikatz.exe", "\\sekurlsa.exe", "\\privilege.exe"]
+negate = false
+
+---
+
+[indicator]
+id = 97
+name = "BA_IND_APPLOCKER_BYPASS"
+description = "AppLocker/应用白名单绕过"
+category = 1
+base_score = 40.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 98
+name = "BA_IND_PROC_FAKE_UPDATE_INSTALLER"
+description = "假更新安装器"
+category = 1
+base_score = 40.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = []
+negate = false
+# 文件名包含 update/install 但路径在 temp 目录
+
+---
+
+[indicator]
+id = 99
+name = "BA_IND_SYSCALL_ALLOC_VM"
+description = "NtAllocateVirtualMemory via direct/indirect syscall"
+category = 3
+base_score = 45.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 100
+name = "BA_IND_SYSCALL_PROTECT_VM"
+description = "NtProtectVirtualMemory via direct/indirect syscall"
+category = 3
+base_score = 45.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 101
+name = "BA_IND_DCOM_REMOTE_ACTIVATION"
+description = "DCOM 远程激活"
+category = 1
+base_score = 35.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 102
+name = "BA_IND_DCOM_MMC20_SHELLEXEC"
+description = "MMC20.Application ExecuteShellCommand"
+category = 1
+base_score = 40.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 103
+name = "BA_IND_DCOM_SHELLWINDOWS"
+description = "ShellWindows/ShellBrowserWindow ShellExecute"
+category = 1
+base_score = 40.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 104
+name = "BA_IND_DCOM_EXCEL_DDE"
+description = "Excel.Application via DCOM (DDE/macro)"
+category = 1
+base_score = 40.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 105
+name = "BA_IND_DCOM_OUTLOOK_CREATEOBJECT"
+description = "Outlook.Application CreateObject"
+category = 1
+base_score = 35.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 106
+name = "BA_IND_DCOM_CHILD_PROCESS"
+description = "dllhost.exe/svchost.exe spawning suspicious child"
+category = 1
+base_score = 35.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false
+
+---
+
+[indicator]
+id = 107
+name = "BA_IND_DCOM_WMI_REMOTE"
+description = "WMI remote execution via DCOM"
+category = 1
+base_score = 40.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "always_true"
+fields = []
+values = []
+negate = false

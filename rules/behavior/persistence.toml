@@ -1,0 +1,545 @@
+# ── 持久化检测规则 ──
+# rule_id 范围：11000-11019
+
+# ── Run 键持久化 ──
+
+[rule]
+rule_id = 11000
+name = "Registry Run Key Persistence"
+description = "注册表 Run/RunOnce 键持久化：修改启动项实现开机自启"
+severity = "medium"
+threat_class = "Behavior/Persistence:RunKey.Generic"
+version = 1
+
+[rule.detection]
+threshold = 40.0
+min_match_count = 2
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_MODIFY_RUN_KEY"
+weight = 20.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_CREATE_SYSTEM_DIR"
+weight = 15.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── Winlogon 壳持久化 ──
+
+[rule]
+rule_id = 11001
+name = "Winlogon Shell Persistence"
+description = "Winlogon Userinit/Shell 修改：替换登录壳实现持久化"
+severity = "high"
+threat_class = "Behavior/Persistence:Winlogon.Generic"
+version = 1
+
+[rule.detection]
+threshold = 55.0
+min_match_count = 1
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_MODIFY_WINLOGON"
+weight = 55.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── IFEO 调试器劫持 ──
+
+[rule]
+rule_id = 11002
+name = "IFEO Debugger Hijack"
+description = "IFEO Debugger 劫持：通过 Image File Execution Options 劫持系统进程"
+severity = "high"
+threat_class = "Behavior/Persistence:IFEO.Generic"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_MODIFY_IFEO_DEBUGGER"
+weight = 50.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 服务创建持久化 ──
+
+[rule]
+rule_id = 11003
+name = "Service Creation Persistence"
+description = "创建系统服务实现持久化：SC_CreateService + 可疑二进制"
+severity = "high"
+threat_class = "Behavior/Persistence:Service.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 2
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_CREATE_SERVICE"
+weight = 30.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_CREATE_SYSTEM_DIR"
+weight = 20.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 计划任务持久化 ──
+
+[rule]
+rule_id = 11004
+name = "Scheduled Task Persistence"
+description = "计划任务持久化：schtasks 创建定时任务"
+severity = "medium"
+threat_class = "Behavior/Persistence:ScheduledTask.Generic"
+version = 1
+
+[rule.detection]
+threshold = 40.0
+min_match_count = 2
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_SCHEDULED_TASK_CREATE"
+weight = 25.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 启动文件夹持久化 ──
+
+[rule]
+rule_id = 11005
+name = "Startup Folder Persistence"
+description = "启动文件夹持久化：在 Startup 目录创建快捷方式或可执行文件"
+severity = "medium"
+threat_class = "Behavior/Persistence:StartupFolder.Generic"
+version = 1
+
+[rule.detection]
+threshold = 35.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_CREATE_STARTUP_EXE"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── WMI 事件订阅持久化 ──
+
+[rule]
+rule_id = 11006
+name = "WMI Event Subscription Persistence"
+description = "WMI 事件订阅持久化：通过 __EventConsumer 实现持久化"
+severity = "high"
+threat_class = "Behavior/Persistence:WMI.Generic"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_WMI_PERSISTENCE"
+weight = 50.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 文件关联劫持 ──
+
+[rule]
+rule_id = 11007
+name = "File Association Hijack"
+description = "HKCR 文件关联劫持：修改 *\\shell\\open\\command 劫持文件打开"
+severity = "high"
+threat_class = "Behavior/Persistence:FileAssoc.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_MODIFY_SHELL_OPEN"
+weight = 45.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── bootExecute 持久化 ──
+
+[rule]
+rule_id = 11008
+name = "bootExecute Persistence"
+description = "AutoChk 执行项持久化：修改 Winlogon\\AutoChk 实现启动时执行"
+severity = "high"
+threat_class = "Behavior/Persistence:BootExecute.Generic"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_BOOT_EXECUTE"
+weight = 50.0
+required = true
+
+---
+
+# ── hosts 文件篡改 ──
+
+[rule]
+rule_id = 11009
+name = "Hosts File Modification"
+description = "hosts 文件篡改：重定向域名到恶意 IP"
+severity = "medium"
+threat_class = "Behavior/Persistence:HostsFile.Generic"
+version = 1
+
+[rule.detection]
+threshold = 35.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_HOSTS_MODIFY"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── autorun.inf 持久化 ──
+
+[rule]
+rule_id = 11010
+name = "Autorun.inf Persistence"
+description = "autorun.inf 持久化：U盘/可移动介质自动执行"
+severity = "medium"
+threat_class = "Behavior/Persistence:Autorun.Generic"
+version = 1
+
+[rule.detection]
+threshold = 35.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_INF_AUTORUN"
+weight = 35.0
+required = true
+
+---
+
+# ── AppInit_DLLs 持久化 ──
+
+[rule]
+rule_id = 11011
+name = "AppInit_DLLs Persistence"
+description = "AppInit_DLLs 注入：修改注册表强制所有 GUI 进程加载恶意 DLL"
+severity = "high"
+threat_class = "Behavior/Persistence:AppInitDLLs.Generic"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_MODIFY_RUN_KEY"
+weight = 30.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_APPDATA_DLL"
+weight = 30.0
+required = false
+
+---
+
+# ── UAC 绕过持久化（Classes\\*）──
+
+[rule]
+rule_id = 11012
+name = "UAC Bypass via Classes Hijack"
+description = "HKCU\\Software\\Classes 劫持实现 UAC Bypass 持久化"
+severity = "high"
+threat_class = "Behavior/Persistence:UACBypass.Generic"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_UAC_BYPASS_CLASSES"
+weight = 50.0
+required = true
+
+---
+
+# ── elevation_service 持久化 ──
+
+[rule]
+rule_id = 11013
+name = "Elevation Service Hijack"
+description = "elevation_service CLSID/服务劫持：浏览器持久化"
+severity = "high"
+threat_class = "Behavior/Persistence:ElevationService.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_ELEVATION_SERVICE_HIJACK"
+weight = 45.0
+required = true
+
+---
+
+# ── DLL Side-Load 持久化 ──
+
+[rule]
+rule_id = 11014
+name = "DLL Side-Load Persistence"
+description = "DLL Side-Loading 持久化：在程序目录放置同名 DLL"
+severity = "high"
+threat_class = "Behavior/Persistence:DllSideLoad.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 2
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_DLL_SIDE_LOAD"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_APPDATA_DLL"
+weight = 25.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── AppData DLL 持久化 ──
+
+[rule]
+rule_id = 11015
+name = "AppData DLL Persistence"
+description = "AppData 目录 DLL 投放：在 AppData 创建 DLL 实现持久化"
+severity = "high"
+threat_class = "Behavior/Persistence:AppDataDLL.Generic"
+version = 1
+
+[rule.detection]
+threshold = 40.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_APPDATA_DLL"
+weight = 40.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_APPDATA_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 自加载 DLL 持久化 ──
+
+[rule]
+rule_id = 11016
+name = "Self-Loading DLL Persistence"
+description = "自加载 DLL 持久化：进程在其目录创建同名 DLL"
+severity = "high"
+threat_class = "Behavior/Persistence:SelfLoadingDLL.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_SELF_LOADING"
+weight = 45.0
+required = true
+
+---
+
+# ── 伪装目录投放 ──
+
+[rule]
+rule_id = 11017
+name = "Fake Directory Drop"
+description = "伪装目录投放：在 temp/appdata/drivers 等目录投放可执行文件"
+severity = "high"
+threat_class = "Behavior/Persistence:FakeDirDrop.Generic"
+version = 1
+
+[rule.detection]
+threshold = 40.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_FAKE_DIR_DROP"
+weight = 40.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 随机文件名可执行文件 ──
+
+[rule]
+rule_id = 11018
+name = "Random Name Executable"
+description = "随机文件名可执行文件：temp 目录随机名 EXE（银狐特征）"
+severity = "medium"
+threat_class = "Behavior/Persistence:RandomNameExe.Generic"
+version = 1
+
+[rule.detection]
+threshold = 35.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_TEMP_RANDOM_NAME_EXE"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 多持久化组合 ──
+
+[rule]
+rule_id = 11019
+name = "Multi-Persistence Chain"
+description = "多持久化组合：Run 键 + 计划任务 + AppData DLL + 系统目录"
+severity = "critical"
+threat_class = "Behavior/Persistence:MultiPersist.Generic"
+version = 1
+
+[rule.detection]
+threshold = 70.0
+min_match_count = 3
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_MODIFY_RUN_KEY"
+weight = 20.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_SCHEDULED_TASK_CREATE"
+weight = 20.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_APPDATA_DLL"
+weight = 25.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_CREATE_SYSTEM_DIR"
+weight = 20.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false

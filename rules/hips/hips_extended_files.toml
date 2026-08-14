@@ -1,0 +1,462 @@
+# ── R0 HIPS 动态规则补充包 - 文件操作部分（来自 dllmain.cpp R3 文件防护）
+# R0 minifilter 使用 FltGetFileNameInformation 获取内核规范化路径
+# 规则路径使用用户态格式（C:\Users\...），内核自动跳过驱动字母后匹配
+# 注意：Raw Disk/MBR 写入由独立的 TianHongHips.Disk 驱动负责，不在此层拦截
+# rule_id 范围：9401-9418
+
+# ── Rule 9401: 桌面快捷方式修改 (lnk) ──
+# dllmain.cpp NewNtWriteFile: 非explorer修改桌面快捷方式
+[rule]
+rule_id = 9401
+name = "Desktop LNK Write"
+description = "拦截非explorer进程修改桌面快捷方式 (T1553.005)"
+severity = "medium"
+threat_class = "Persistence/DesktopLnk"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\*\\Desktop"
+file = "*"
+ext = "lnk"
+flag = "SEF_UNSIGNED_BLOCKED"
+
+---
+
+# ── Rule 9402: 启动文件夹文件写入 ──
+[rule]
+rule_id = 9402
+name = "Startup Folder Write"
+description = "拦截向用户启动文件夹写入文件 (T1547.001)"
+severity = "high"
+threat_class = "Persistence/StartupFolder"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\*\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup"
+file = "*"
+ext = "*"
+flag = "SEF_UNSIGNED_BLOCKED"
+
+---
+
+# ── Rule 9403: 全局启动文件夹写入 ──
+[rule]
+rule_id = 9403
+name = "AllUsers Startup Write"
+description = "拦截向全局启动文件夹写入文件 (T1547.001)"
+severity = "high"
+threat_class = "Persistence/StartupFolder"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup"
+file = "*"
+ext = "*"
+flag = "SEF_UNSIGNED_BLOCKED"
+
+---
+
+# ── Rule 9404: 桌面 URL 快捷方式修改 ──
+[rule]
+rule_id = 9404
+name = "Desktop URL Write"
+description = "拦截桌面URL快捷方式修改 (钓鱼链接)"
+severity = "medium"
+threat_class = "Persistence/DesktopUrl"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\*\\Desktop"
+file = "*"
+ext = "url"
+flag = "SEF_UNSIGNED_BLOCKED"
+
+---
+
+# ── Rule 9405: 公共桌面快捷方式修改 ──
+[rule]
+rule_id = 9405
+name = "Public Desktop LNK Write"
+description = "拦截公共桌面快捷方式修改 (T1547.001)"
+severity = "medium"
+threat_class = "Persistence/PublicDesktop"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\Public\\Desktop"
+file = "*"
+ext = "lnk"
+flag = "SEF_UNSIGNED_BLOCKED"
+
+---
+
+# ── Rule 9406: PowerShell 用户配置删除 ──
+[rule]
+rule_id = 9406
+name = "PowerShell Profile Delete"
+description = "拦截PowerShell用户配置文件删除 (T1070.004)"
+severity = "medium"
+threat_class = "DefenseEvasion/CleanHistory"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_DELETE"
+path = "C:\\Users\\*\\Documents\\WindowsPowerShell"
+file = "profile.ps1"
+ext = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9407: PowerShell ISE 配置删除 ──
+[rule]
+rule_id = 9407
+name = "PowerShell ISE Config Delete"
+description = "拦截PowerShell ISE配置文件删除 (T1070.004)"
+severity = "medium"
+threat_class = "DefenseEvasion/CleanHistory"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_DELETE"
+path = "C:\\Users\\*\\Documents\\WindowsPowerShell"
+file = "Microsoft.PowerShellISE_MSDTS.config"
+ext = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9408: PowerShell 命令历史删除 ──
+# 注意：实际历史路径为 ~\AppData\Roaming\Microsoft\Windows\PowerShell\PowerShell.exe_...
+# 此规则覆盖该目录下的config删除
+[rule]
+rule_id = 9408
+name = "PowerShell History Config Delete"
+description = "拦截PowerShell命令历史配置删除 (T1070.004)"
+severity = "medium"
+threat_class = "DefenseEvasion/CleanHistory"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_DELETE"
+path = "C:\\Users\\*\\AppData\\Roaming\\Microsoft\\Windows\\PowerShell"
+file = "*"
+ext = "config"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9409: 文档目录 PS1 写入 ──
+[rule]
+rule_id = 9409
+name = "Documents PS1 Write"
+description = "拦截文档目录PowerShell脚本写入 (T1059.001)"
+severity = "medium"
+threat_class = "Execution/PowerShell"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\*\\Documents"
+file = "*"
+ext = "ps1"
+flag = "SEF_UNSIGNED_BLOCKED"
+
+---
+
+# ── Rule 9410: 下载目录 PS1 写入 ──
+[rule]
+rule_id = 9410
+name = "Downloads PS1 Write"
+description = "拦截下载目录PowerShell脚本写入 (T1059.001)"
+severity = "high"
+threat_class = "Execution/PowerShell"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\*\\Downloads"
+file = "*"
+ext = "ps1"
+flag = "SEF_UNSIGNED_BLOCKED"
+
+---
+
+# ── Rule 9411: 桌面 PS1 写入 ──
+[rule]
+rule_id = 9411
+name = "Desktop PS1 Write"
+description = "拦截桌面PowerShell脚本写入 (T1059.001)"
+severity = "medium"
+threat_class = "Execution/PowerShell"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\*\\Desktop"
+file = "*"
+ext = "ps1"
+flag = "SEF_UNSIGNED_BLOCKED"
+
+---
+
+# ── Rule 9412: Temp 目录 PS1 写入 ──
+[rule]
+rule_id = 9412
+name = "Temp PS1 Write"
+description = "拦截Temp目录PowerShell脚本写入 (T1059.001)"
+severity = "high"
+threat_class = "Execution/PowerShell"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Windows\\Temp"
+file = "*"
+ext = "ps1"
+flag = "SEF_UNSIGNED_BLOCKED"
+
+---
+
+# ── Rule 9413: 公共文档目录 PS1 写入 ──
+[rule]
+rule_id = 9413
+name = "Public Documents PS1 Write"
+description = "拦截公共文档目录PowerShell脚本写入 (T1059.001)"
+severity = "high"
+threat_class = "Execution/PowerShell"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\Public\\Documents"
+file = "*"
+ext = "ps1"
+flag = "SEF_UNSIGNED_BLOCKED"
+
+---
+
+# ── Rule 9414: AppData Local 目录 PS1 写入 ──
+[rule]
+rule_id = 9414
+name = "AppData Local PS1 Write"
+description = "拦截AppData\\Local目录PowerShell脚本写入 (T1059.001)"
+severity = "high"
+threat_class = "Execution/PowerShell"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\*\\AppData\\Local"
+file = "*"
+ext = "ps1"
+flag = "SEF_UNSIGNED_BLOCKED"
+
+---
+
+# ── Rule 9415: 文档目录 VBS 写入 ──
+[rule]
+rule_id = 9415
+name = "Documents VBS Write"
+description = "拦截文档目录VBScript写入 (T1059.005)"
+severity = "medium"
+threat_class = "Execution/VBS"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\*\\Documents"
+file = "*"
+ext = "vbs"
+flag = "SEF_UNSIGNED_BLOCKED"
+
+---
+
+# ── Rule 9416: 下载目录 VBS 写入 ──
+[rule]
+rule_id = 9416
+name = "Downloads VBS Write"
+description = "拦截下载目录VBScript写入 (T1059.005)"
+severity = "high"
+threat_class = "Execution/VBS"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\*\\Downloads"
+file = "*"
+ext = "vbs"
+flag = "SEF_UNSIGNED_BLOCKED"
+
+---
+
+# ── Rule 9417: 桌面 VBS 写入 ──
+[rule]
+rule_id = 9417
+name = "Desktop VBS Write"
+description = "拦截桌面VBScript写入 (T1059.005)"
+severity = "medium"
+threat_class = "Execution/VBS"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\*\\Desktop"
+file = "*"
+ext = "vbs"
+flag = "SEF_UNSIGNED_BLOCKED"
+
+---
+
+# ── Rule 9418: Temp 目录 VBS 写入 ──
+[rule]
+rule_id = 9418
+name = "Temp VBS Write"
+description = "拦截Temp目录VBScript写入 (T1059.005)"
+severity = "high"
+threat_class = "Execution/VBS"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Windows\\Temp"
+file = "*"
+ext = "vbs"
+flag = "SEF_UNSIGNED_BLOCKED"
+
+---
+
+# ── Rule 9419: Chromium elevation_service EXE 替换 ──
+[rule]
+rule_id = 9419
+name = "ElevationService EXE Replace"
+description = "拦截Chromium浏览器elevation_service.exe替换 (T1574.002/T1543.003)"
+severity = "critical"
+threat_class = "Persistence/ElevationServiceHijack"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "*\\Google\\Chrome\\Application\\*\\elevation_service.exe"
+file = "elevation_service.exe"
+ext = "exe"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9420: Chromium elevation_service DLL 侧加载 ──
+[rule]
+rule_id = 9420
+name = "ElevationService DLL SideLoad"
+description = "拦截Chromium浏览器elevation_service目录DLL投放 (T1574.002)"
+severity = "critical"
+threat_class = "Persistence/ElevationServiceHijack"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "*\\Google\\Chrome\\Application\\*\\*.dll"
+file = "*"
+ext = "dll"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9421: Edge elevation_service EXE 替换 ──
+[rule]
+rule_id = 9421
+name = "Edge ElevationService EXE Replace"
+description = "拦截Edge浏览器elevation_service.exe替换 (T1574.002/T1543.003)"
+severity = "critical"
+threat_class = "Persistence/ElevationServiceHijack"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "*\\Microsoft\\Edge\\Application\\*\\elevation_service.exe"
+file = "elevation_service.exe"
+ext = "exe"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9422: Edge elevation_service DLL 侧加载 ──
+[rule]
+rule_id = 9422
+name = "Edge ElevationService DLL SideLoad"
+description = "拦截Edge浏览器elevation_service目录DLL投放 (T1574.002)"
+severity = "critical"
+threat_class = "Persistence/ElevationServiceHijack"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "*\\Microsoft\\Edge\\Application\\*\\*.dll"
+file = "*"
+ext = "dll"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9423: Brave elevation_service EXE 替换 ──
+[rule]
+rule_id = 9423
+name = "Brave ElevationService EXE Replace"
+description = "拦截Brave浏览器elevation_service.exe替换 (T1574.002/T1543.003)"
+severity = "critical"
+threat_class = "Persistence/ElevationServiceHijack"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "*\\BraveSoftware\\Brave-Browser\\Application\\*\\elevation_service.exe"
+file = "elevation_service.exe"
+ext = "exe"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 9424: Brave elevation_service DLL 侧加载 ──
+[rule]
+rule_id = 9424
+name = "Brave ElevationService DLL SideLoad"
+description = "拦截Brave浏览器elevation_service目录DLL投放 (T1574.002)"
+severity = "critical"
+threat_class = "Persistence/ElevationServiceHijack"
+version = 1
+rule_type = "file"
+
+[rule.params]
+op = "FILE_OPERATION_WRITE"
+path = "*\\BraveSoftware\\Brave-Browser\\Application\\*\\*.dll"
+file = "*"
+ext = "dll"
+flag = "SEF_NOT_SYSTEM_BLOCKED"

@@ -66,9 +66,10 @@ ClamAV/
 elastic-ref/
 **/elastic-ref/
 
-# ===== Rules Directory (files too large, keep structure description only) =====
-# 参见 rules/README.md 获取规则文件说明和获取方式
-rules/
+# ===== Rules Directory =====
+# rules/ 下的规则文件（behavior/hips/indicators）已纳入版本控制，仅忽略其缓存/临时文件
+# 构建产物目录下的副本（x64/.../Resources/rules/）由上面的 x64/ 规则一并忽略
+rules/**/cache*
 
 # ===== External Binaries (third-party DLLs, too large to commit) =====
 ExternalBinaries/

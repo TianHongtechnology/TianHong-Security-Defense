@@ -1,0 +1,987 @@
+# ── 注入与内存操作检测规则 ──
+# rule_id 范围：10000-10034
+# 对应：g_baProfiles[47-62, 79-89] 注入类画像
+
+# ── PoolParty / 线程池注入检测 ──
+
+[rule]
+rule_id = 10000
+name = "PoolParty Thread Pool Injection"
+description = "PoolParty 线程池注入：通过 NtCreateWorkerFactory 创建 WorkerFactory 并写入回调地址"
+severity = "critical"
+threat_class = "Behavior/Injection:PoolParty.ThreadPool"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_POOLPARTY_HANDLE_REQUEST"
+weight = 10.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_CROSS_PROCESS_WRITE"
+weight = 20.0
+required = false
+
+[rule.detection.context]
+exclude_parent_name = "windbg.exe"
+exclude_parent_name = "x64dbg.exe"
+exclude_parent_name = "vsjitdebugger.exe"
+
+[[rule.exceptions]]
+image_path = "\\Windows\\system32\\vsjitdebugger.exe"
+reason = "VS JIT 调试器"
+
+---
+
+# ── ROP DLL 加载规则 ──
+
+[rule]
+rule_id = 10001
+name = "DLL Load Via ROP Chain"
+description = "DLL 加载通过 ROP 链发起：调用栈含非镜像返回地址"
+severity = "high"
+threat_class = "Behavior/Injection:DLLLoadViaROP"
+version = 1
+
+[rule.detection]
+threshold = 40.0
+min_match_count = 1
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_IMG_LOAD_VIA_ROP"
+weight = 50.0
+required = true
+
+[[rule.exceptions]]
+image_path = "dotnet.exe"
+reason = ".NET CLR JIT 编译"
+
+[[rule.exceptions]]
+image_path = "iexplore.exe"
+reason = "IE + Chakra JIT"
+
+[[rule.exceptions]]
+image_path = "chrome.exe"
+reason = "Chrome + V8 JIT"
+
+[[rule.exceptions]]
+image_path = "msedge.exe"
+reason = "Edge + V8 JIT"
+
+[[rule.exceptions]]
+image_path = "powershell.exe"
+reason = "PowerShell + .NET JIT"
+
+[[rule.exceptions]]
+image_path = "powershell_ise.exe"
+reason = "ISE + .NET JIT"
+
+---
+
+# ── ROP DLL 加载（含证据）──
+
+[rule]
+rule_id = 10002
+name = "ROP DLL Load with Evidence"
+description = "ROP 链 DLL 加载：含调用栈证据的 ROP 检测"
+severity = "high"
+threat_class = "Behavior/Injection:ROP.DLLLoad"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 1
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_IMG_LOAD_VIA_ROP"
+weight = 50.0
+required = true
+
+---
+
+# ── 远程线程注入 ──
+
+[rule]
+rule_id = 10003
+name = "Process Injection via Remote Thread"
+description = "远程线程注入：跨进程写入 + 创建远程线程"
+severity = "critical"
+threat_class = "Behavior/Injection:RemoteThread.Generic"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_CROSS_PROCESS_WRITE"
+weight = 25.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_OPEN_REMOTE_THREAD"
+weight = 25.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+[[rule.exceptions]]
+image_path = "windbg.exe"
+reason = "Windbg 调试器"
+
+[[rule.exceptions]]
+image_path = "vsjitdebugger.exe"
+reason = "VS JIT 调试器"
+
+---
+
+# ── 进程空心化 ──
+
+[rule]
+rule_id = 10004
+name = "Process Hollowing"
+description = "进程空心化：创建挂起进程 + 写入内存 + 远程线程恢复"
+severity = "critical"
+threat_class = "Behavior/Injection:ProcessHollowing.Generic"
+version = 1
+
+[rule.detection]
+threshold = 65.0
+min_match_count = 3
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_PROCESS_HOLLOWING"
+weight = 65.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 注入链检测 ──
+
+[rule]
+rule_id = 10005
+name = "Injection Chain Detection"
+description = "注入链：跨进程写入 + 远程线程创建组合检测"
+severity = "critical"
+threat_class = "Behavior/Injection:Chain.Generic"
+version = 1
+
+[rule.detection]
+threshold = 60.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_INJECTION_CHAIN"
+weight = 60.0
+required = true
+
+---
+
+# ── APC 注入 ──
+
+[rule]
+rule_id = 10006
+name = "APC Injection"
+description = "跨进程 APC 注入：NtQueueApcThread 向目标进程插入 APC"
+severity = "critical"
+threat_class = "Behavior/Injection:APC.Generic"
+version = 1
+
+[rule.detection]
+threshold = 55.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_APC_INJECTION"
+weight = 40.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_CROSS_PROCESS_WRITE"
+weight = 25.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── Section 映射注入 ──
+
+[rule]
+rule_id = 10007
+name = "Section Mapping Injection"
+description = "跨进程 Section 映射注入：NtMapViewOfSection 映射可执行内存"
+severity = "critical"
+threat_class = "Behavior/Injection:SectionMap.Generic"
+version = 1
+
+[rule.detection]
+threshold = 55.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_MAP_SECTION"
+weight = 40.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_CROSS_PROCESS_WRITE"
+weight = 25.0
+required = false
+
+---
+
+# ── 直接 Syscall 注入 ──
+
+[rule]
+rule_id = 10008
+name = "Direct Syscall Injection"
+description = "直接 Syscall 绕过 R3 钩子：NtAllocateVirtualMemory/NtWriteVirtualMemory 直接调用"
+severity = "critical"
+threat_class = "Behavior/Injection:DirectSyscall.Generic"
+version = 1
+
+[rule.detection]
+threshold = 55.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_DIRECT_SYSCALL"
+weight = 40.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_UNSIGNED"
+weight = 15.0
+required = false
+
+---
+
+# ── 间接 Syscall 注入 ──
+
+[rule]
+rule_id = 10009
+name = "Indirect Syscall Injection"
+description = "间接 Syscall 绕过：jmp 到 ntdll syscall 指令"
+severity = "high"
+threat_class = "Behavior/Injection:IndirectSyscall.Generic"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_INDIRECT_SYSCALL"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── ETW TI 远程可执行内存分配 ──
+
+[rule]
+rule_id = 10010
+name = "Remote Executable Memory Allocation"
+description = "远程可执行内存分配：通过 ETW TI 检测的远程内存分配+保护+写入链"
+severity = "critical"
+threat_class = "Behavior/Injection:ETW.RemoteAllocExec"
+version = 1
+
+[rule.detection]
+threshold = 55.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_ETW_REMOTE_ALLOC_EXECUTABLE"
+weight = 30.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_ETW_REMOTE_PROTECT_EXECUTABLE"
+weight = 25.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_ETW_REMOTE_WRITE_MEMORY"
+weight = 25.0
+required = false
+
+---
+
+# ── ETW TI 远程 APC 插入 ──
+
+[rule]
+rule_id = 10011
+name = "Remote APC Insertion via ETW TI"
+description = "远程 APC 插入：通过 ETW TI 检测的跨进程 APC 队列"
+severity = "critical"
+threat_class = "Behavior/Injection:ETW.RemoteAPC"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_ETW_REMOTE_QUEUE_APC"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_ETW_REMOTE_SET_THREAD_CONTEXT"
+weight = 25.0
+required = false
+
+---
+
+# ── ETW TI 远程线程上下文修改 ──
+
+[rule]
+rule_id = 10012
+name = "Remote Thread Context Manipulation"
+description = "远程线程上下文修改：EIP/RIP 重定向到 shellcode"
+severity = "critical"
+threat_class = "Behavior/Injection:ETW.RemoteThreadCtx"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_ETW_REMOTE_SET_THREAD_CONTEXT"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_ETW_REMOTE_MAP_VIEW_EXECUTABLE"
+weight = 25.0
+required = false
+
+---
+
+# ── ETW TI 可执行映射视图 ──
+
+[rule]
+rule_id = 10013
+name = "Remote Executable Mapped View"
+description = "远程可执行映射视图：NtMapViewOfSection 映射到远程进程"
+severity = "critical"
+threat_class = "Behavior/Injection:ETW.RemoteMapView"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_ETW_REMOTE_MAP_VIEW_EXECUTABLE"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_ETW_REMOTE_WRITE_MEMORY"
+weight = 25.0
+required = false
+
+---
+
+# ── ETW TI 分配→保护链 ──
+
+[rule]
+rule_id = 10014
+name = "ETW Alloc-Then-Protect Chain"
+description = "非可执行分配后改为可执行：经典 shellcode 分配模式"
+severity = "high"
+threat_class = "Behavior/Injection:ETW.AllocProtectChain"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_ETW_ALLOC_TO_PROTECT_CHAIN"
+weight = 30.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_ETW_REMOTE_WRITE_MEMORY"
+weight = 25.0
+required = false
+
+---
+
+# ── ETW TI 写入→保护链 ──
+
+[rule]
+rule_id = 10015
+name = "ETW Write-Then-Protect Chain"
+description = "写入后改为可执行保护：shellcode 写入模式"
+severity = "high"
+threat_class = "Behavior/Injection:ETW.WriteProtectChain"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_ETW_WRITE_TO_PROTECT_CHAIN"
+weight = 30.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_ETW_REMOTE_PROTECT_EXECUTABLE"
+weight = 25.0
+required = false
+
+---
+
+# ── 自加载 DLL 规避 ──
+
+[rule]
+rule_id = 10016
+name = "Self-Loading DLL Evasion"
+description = "自加载 DLL 规避：进程在其自身目录创建同名 DLL"
+severity = "high"
+threat_class = "Behavior/Evasion:SelfLoadingDLL.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_SELF_LOADING"
+weight = 45.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── DLL Side-Load 检测 ──
+
+[rule]
+rule_id = 10017
+name = "DLL Side-Loading Detection"
+description = "DLL Side-Loading：进程目录创建同名 DLL 劫持加载"
+severity = "high"
+threat_class = "Behavior/Evasion:DllSideLoad.Generic"
+version = 1
+
+[rule.detection]
+threshold = 40.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_DLL_SIDE_LOAD"
+weight = 40.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── LOLBin 执行链 ──
+
+[rule]
+rule_id = 10018
+name = "LOLBin Execution Chain"
+description = "合法二进制代理执行：mshta/regsvr32/cscript 等 LOLBin 执行脚本"
+severity = "high"
+threat_class = "Behavior/Execution:LOLBin.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 2
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_MSHTA_EXECUTION"
+weight = 30.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REGSVR32_EXECUTION"
+weight = 30.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_NETWORK_C2_CONNECT"
+weight = 20.0
+required = false
+
+---
+
+# ── 签名二进制代理执行 ──
+
+[rule]
+rule_id = 10019
+name = "Signed Binary Proxy Execution"
+description = "签名二进制代理执行：mimikatz/sekurlsa 等签名工具"
+severity = "critical"
+threat_class = "Behavior/CredentialAccess:SignedBinaryProxy.Generic"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 1
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_SIGNED_BINARY_PROXY"
+weight = 50.0
+required = true
+
+---
+
+# ── mavinject 远程线程注入 ──
+
+[rule]
+rule_id = 10020
+name = "mavinject Remote Thread Injection"
+description = "mavinject.exe 远程线程注入：通过 .NET 程序集注入"
+severity = "high"
+threat_class = "Behavior/Injection:mavinject.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_MAVINJECT_INJECTION"
+weight = 45.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── CMSTP INF 脚本执行 ──
+
+[rule]
+rule_id = 10021
+name = "CMSTP INF Script Execution"
+description = "CMSTP 通过 INF 脚本执行任意代码（UAC Bypass + 代码执行）"
+severity = "high"
+threat_class = "Behavior/Execution:CMSTP.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_CMSTP_EXECUTION"
+weight = 45.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── MSDT 诊断包执行 ──
+
+[rule]
+rule_id = 10022
+name = "MSDT Troubleshooting Pack Execution"
+description = "msdt.exe 通过 .diagcab 诊断包执行任意代码"
+severity = "high"
+threat_class = "Behavior/Execution:MSDT.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_MSDT_EXECUTION"
+weight = 45.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── Control Panel Item 执行 ──
+
+[rule]
+rule_id = 10023
+name = "Control Panel Item Execution"
+description = "CPL 文件执行：通过 control.exe 加载恶意控制面板项"
+severity = "medium"
+threat_class = "Behavior/Execution:CPL.Generic"
+version = 1
+
+[rule.detection]
+threshold = 35.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_CONTROL_PANEL_ITEM"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── AppLocker 绕过 ──
+
+[rule]
+rule_id = 10024
+name = "AppLocker Bypass"
+description = "AppLocker/应用白名单绕过：使用 LOLBin 执行未授权代码"
+severity = "high"
+threat_class = "Behavior/Evasion:AppLockerBypass.Generic"
+version = 1
+
+[rule.detection]
+threshold = 40.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_APPLOCKER_BYPASS"
+weight = 40.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── ntdll 卸载钩子检测 ──
+
+[rule]
+rule_id = 10025
+name = "ntdll Unhook Detection"
+description = "ntdll.dll 卸载钩子：进程修改自身 ntdll 导出表"
+severity = "high"
+threat_class = "Behavior/Evasion:NtdllUnhook.Generic"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_NTDLL_UNHOOK"
+weight = 50.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── ntdll 重映射检测 ──
+
+[rule]
+rule_id = 10026
+name = "ntdll Remap Detection"
+description = "ntdll.dll 重映射：进程修改 ntdll 基址或重新映射"
+severity = "high"
+threat_class = "Behavior/Evasion:NtdllRemap.Generic"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_NTDLL_REMAP"
+weight = 50.0
+required = true
+
+---
+
+# ── ntdll 异常路径加载 ──
+
+[rule]
+rule_id = 10027
+name = "ntdll Path Anomaly"
+description = "ntdll.dll 从非系统路径加载：可能为 DLL 替换攻击"
+severity = "critical"
+threat_class = "Behavior/Evasion:NtdllPathAnomaly.Generic"
+version = 1
+
+[rule.detection]
+threshold = 55.0
+min_match_count = 1
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_NTDLL_PATH_ANOMALY"
+weight = 55.0
+required = true
+
+---
+
+# ── 原子权限组合：VM_WRITE + VM_OPERATION ──
+
+[rule]
+rule_id = 10028
+name = "Atomic VM_WRITE + VM_OPERATION"
+description = "原子权限组合：VM_WRITE + VM_OPERATION 同时请求（PoolParty Variant 1）"
+severity = "critical"
+threat_class = "Behavior/Injection:PoolParty.VMWriteVMOperate"
+version = 1
+
+[rule.detection]
+threshold = 55.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_VM_WRITE_VM_OPERATE"
+weight = 40.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_CROSS_PROCESS_WRITE"
+weight = 30.0
+required = false
+
+---
+
+# ── 原子权限组合：VM_OPERATION + CREATE_THREAD ──
+
+[rule]
+rule_id = 10029
+name = "Atomic VM_OPERATION + CREATE_THREAD"
+description = "原子权限组合：VM_OPERATION + CREATE_THREAD 同时请求（PoolParty Variant 2）"
+severity = "critical"
+threat_class = "Behavior/Injection:PoolParty.VMOperCreateThread"
+version = 1
+
+[rule.detection]
+threshold = 55.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_VM_OPER_CREATE_THREAD"
+weight = 40.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_CROSS_PROCESS_WRITE"
+weight = 30.0
+required = false
+
+---
+
+# ── 原子权限组合：VM_OPERATION + DUP_HANDLE ──
+
+[rule]
+rule_id = 10030
+name = "Atomic VM_OPERATION + DUP_HANDLE"
+description = "原子权限组合：VM_OPERATION + DUP_HANDLE 同时请求（PoolParty Variant 3）"
+severity = "critical"
+threat_class = "Behavior/Injection:PoolParty.VMOperDupHandle"
+version = 1
+
+[rule.detection]
+threshold = 55.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_VM_OPER_DUP_HANDLE"
+weight = 40.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_CROSS_PROCESS_WRITE"
+weight = 30.0
+required = false
+
+---
+
+# ── Syscall 内存分配 ──
+
+[rule]
+rule_id = 10031
+name = "Syscall Memory Allocation"
+description = "通过直接/间接 Syscall 进行内存分配（绕过 R3 hook）"
+severity = "high"
+threat_class = "Behavior/Injection:SyscallAlloc.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_SYSCALL_ALLOC_VM"
+weight = 45.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── Syscall 内存保护 ──
+
+[rule]
+rule_id = 10032
+name = "Syscall Memory Protection"
+description = "通过直接/间接 Syscall 修改内存保护（绕过 R3 hook）"
+severity = "high"
+threat_class = "Behavior/Injection:SyscallProtect.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_SYSCALL_PROTECT_VM"
+weight = 45.0
+required = true
+
+---
+
+# ── 驱动加载检测 ──
+
+[rule]
+rule_id = 10033
+name = "BYOVD Driver Load"
+description = "自带漏洞驱动加载：从临时目录加载未签名驱动"
+severity = "critical"
+threat_class = "Behavior/Injection:BYOVD.Generic"
+version = 1
+
+[rule.detection]
+threshold = 60.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_BYOVD_DRIVER_LOAD"
+weight = 50.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 系统目录驱动创建 ──
+
+[rule]
+rule_id = 10034
+name = "System Directory Driver Drop"
+description = "在系统目录创建驱动文件（持久化 + 提权前置）"
+severity = "high"
+threat_class = "Behavior/Persistence:SystemDirDriver.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 2
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_CREATE_DRIVER"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_CREATE_SYSTEM_DIR"
+weight = 25.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false

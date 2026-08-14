@@ -1,0 +1,435 @@
+# ── 发现与侦察检测规则 ──
+# rule_id 范围：14000-14014
+
+# ── 系统信息发现 ──
+
+[rule]
+rule_id = 14000
+name = "System Information Discovery"
+description = "系统信息发现：VM 检测 + 系统枚举 + 账户发现组合"
+severity = "medium"
+threat_class = "Behavior/Discovery:SystemInfo.Generic"
+version = 1
+
+[rule.detection]
+threshold = 40.0
+min_match_count = 2
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_VM_BIOS_QUERY"
+weight = 15.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_VM_TZ_QUERY"
+weight = 15.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_SYSTEM_INFO_DISCOVERY"
+weight = 20.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 网络侦察 ──
+
+[rule]
+rule_id = 14001
+name = "Network Reconnaissance"
+description = "网络侦察：多目标端口扫描 + 服务发现"
+severity = "medium"
+threat_class = "Behavior/Discovery:NetworkRecon.Generic"
+version = 1
+
+[rule.detection]
+threshold = 40.0
+min_match_count = 2
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_UNKNOWN_PORT"
+weight = 20.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_PROCESS_NETWORK"
+weight = 25.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_HIDDEN_WINDOW"
+weight = 10.0
+required = false
+
+---
+
+# ── 账户发现 ──
+
+[rule]
+rule_id = 14002
+name = "Account Discovery"
+description = "账户发现：枚举本地/域账户信息"
+severity = "medium"
+threat_class = "Behavior/Discovery:AccountDiscovery.Generic"
+version = 1
+
+[rule.detection]
+threshold = 35.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_ACCOUNT_DISCOVERY"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 文件系统侦察 ──
+
+[rule]
+rule_id = 14003
+name = "File System Discovery"
+description = "文件系统侦察：枚举共享文件夹和敏感文件"
+severity = "medium"
+threat_class = "Behavior/Discovery:FileSystem.Generic"
+version = 1
+
+[rule.detection]
+threshold = 35.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_NETWORK_SHARE"
+weight = 30.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 进程枚举 ──
+
+[rule]
+rule_id = 14004
+name = "Process Enumeration"
+description = "进程枚举：遍历系统进程寻找安全软件"
+severity = "medium"
+threat_class = "Behavior/Discovery:ProcessEnum.Generic"
+version = 1
+
+[rule.detection]
+threshold = 30.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_KILL_SECURITY_PROCESS"
+weight = 30.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 网络侦察 + C2 组合 ──
+
+[rule]
+rule_id = 14005
+name = "Network Recon + C2"
+description = "网络侦察后建立 C2 连接（横向移动前兆）"
+severity = "high"
+threat_class = "Behavior/LateralMovement:NetworkReconC2.Generic"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 2
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_C2_CONNECT"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_UNKNOWN_PORT"
+weight = 15.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_HIDDEN_WINDOW"
+weight = 10.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_UNSIGNED"
+weight = 15.0
+required = false
+
+---
+
+# ── ETW 网络侦察 ──
+
+[rule]
+rule_id = 14006
+name = "ETW Network Recon"
+description = "ETW 检测到的网络侦察（多目标端口扫描）"
+severity = "medium"
+threat_class = "Behavior/Discovery:ETWNetworkRecon.Generic"
+version = 1
+
+[rule.detection]
+threshold = 35.0
+min_match_count = 2
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_UNKNOWN_PORT"
+weight = 20.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_PROCESS_NETWORK"
+weight = 15.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_HIDDEN_WINDOW"
+weight = 10.0
+required = false
+
+---
+
+# ── 域枚举 ──
+
+[rule]
+rule_id = 14007
+name = "Domain Enumeration"
+description = "域枚举：获取域控制器和域成员信息"
+severity = "high"
+threat_class = "Behavior/Discovery:DomainEnum.Generic"
+version = 1
+
+[rule.detection]
+threshold = 40.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_SYSTEM_INFO_DISCOVERY"
+weight = 30.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_PROCESS_NETWORK"
+weight = 20.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 硬件枚举 ──
+
+[rule]
+rule_id = 14008
+name = "Hardware Enumeration"
+description = "硬件枚举：获取系统硬件信息用于 VM 检测"
+severity = "low"
+threat_class = "Behavior/Discovery:HardwareEnum.Generic"
+version = 1
+
+[rule.detection]
+threshold = 25.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_VM_BIOS_QUERY"
+weight = 25.0
+required = true
+
+---
+
+# ── 软件枚举 ──
+
+[rule]
+rule_id = 14009
+name = "Software Enumeration"
+description = "软件枚举：获取已安装软件和版本信息"
+severity = "low"
+threat_class = "Behavior/Discovery:SoftwareEnum.Generic"
+version = 1
+
+[rule.detection]
+threshold = 25.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_SYSTEM_INFO_DISCOVERY"
+weight = 25.0
+required = true
+
+---
+
+# ── 安全软件检测 ──
+
+[rule]
+rule_id = 14010
+name = "Security Software Detection"
+description = "安全软件检测：枚举正在运行的安全进程"
+severity = "high"
+threat_class = "Behavior/Discovery:SecSoftDetect.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_KILL_SECURITY_PROCESS"
+weight = 30.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 沙箱检测组合 ──
+
+[rule]
+rule_id = 14011
+name = "Sandbox Detection Combo"
+description = "沙箱检测组合：VM + 时区 + 硬件 + 进程枚举"
+severity = "high"
+threat_class = "Behavior/Discovery:SandboxDetect.Generic"
+version = 1
+
+[rule.detection]
+threshold = 55.0
+min_match_count = 3
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_VM_BIOS_QUERY"
+weight = 15.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_VM_TZ_QUERY"
+weight = 15.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_KILL_SECURITY_PROCESS"
+weight = 20.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 系统时间查询 ──
+
+[rule]
+rule_id = 14012
+name = "System Time Query"
+description = "系统时间查询：获取当前时间用于沙箱检测"
+severity = "low"
+threat_class = "Behavior/Discovery:TimeQuery.Generic"
+version = 1
+
+[rule.detection]
+threshold = 20.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_VM_TZ_QUERY"
+weight = 20.0
+required = true
+
+---
+
+# ── 网络共享枚举 ──
+
+[rule]
+rule_id = 14013
+name = "Network Share Enumeration"
+description = "网络共享枚举：发现可访问的网络共享资源"
+severity = "medium"
+threat_class = "Behavior/Discovery:ShareEnum.Generic"
+version = 1
+
+[rule.detection]
+threshold = 35.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_NETWORK_SHARE"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── DCOM 子进程异常 ──
+
+[rule]
+rule_id = 14014
+name = "DCOM Child Process Anomaly"
+description = "DCOM 子进程异常：dllhost/svchost 创建可疑子进程"
+severity = "high"
+threat_class = "Behavior/LateralMovement:DCOMChild.Generic"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_DCOM_CHILD_PROCESS"
+weight = 50.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false

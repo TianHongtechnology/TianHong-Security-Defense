@@ -1,0 +1,695 @@
+# ── 防御规避检测规则 ──
+# rule_id 范围：12000-12024
+
+# ── 禁用恢复控制台 ──
+
+[rule]
+rule_id = 12000
+name = "Recovery Console Disabled"
+description = "禁用恢复控制台：bcdedit 设置 recoveryenabled=No"
+severity = "high"
+threat_class = "Behavior/Evasion:RecoveryDisable.Generic"
+version = 1
+
+[rule.detection]
+threshold = 55.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_BCDEDIT_RECOVERY_DISABLE"
+weight = 55.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 卷影副本删除 ──
+
+[rule]
+rule_id = 12001
+name = "Volume Shadow Copy Deletion"
+description = "删除卷影副本：vssadmin delete shadows 阻止恢复"
+severity = "high"
+threat_class = "Behavior/Evasion:VSSDelete.Generic"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_VSSADMIN_SHADOW_DELETE"
+weight = 50.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 安全进程终止 ──
+
+[rule]
+rule_id = 12002
+name = "Security Process Termination"
+description = "终止安全进程：Smartscreen/Defender 等安全软件被杀"
+severity = "critical"
+threat_class = "Behavior/DefenseEvasion:KillSecurity.Generic"
+version = 1
+
+[rule.detection]
+threshold = 55.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_KILL_SECURITY_PROCESS"
+weight = 45.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── taskkill 安全工具 ──
+
+[rule]
+rule_id = 12003
+name = "Taskkill Security Targeting"
+description = "taskkill  targeting 安全工具进程"
+severity = "high"
+threat_class = "Behavior/DefenseEvasion:TaskkillSecurity.Generic"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_TASKKILL_SECURITY"
+weight = 50.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 关键进程终止 ──
+
+[rule]
+rule_id = 12004
+name = "Critical Process Termination"
+description = "终止关键系统进程（csrss/explorer/system）"
+severity = "critical"
+threat_class = "Behavior/DefenseEvasion:CriticalProcessKill.Generic"
+version = 1
+
+[rule.detection]
+threshold = 60.0
+min_match_count = 1
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_CRITICAL_PROCESS_KILL"
+weight = 60.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 强制关机 ──
+
+[rule]
+rule_id = 12005
+name = "Forced System Shutdown"
+description = "强制关机/重启：shutdown.exe 异常参数（攻击者阻止恢复）"
+severity = "high"
+threat_class = "Behavior/Impact:ForcedShutdown.Generic"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_SYSTEM_SHUTDOWN"
+weight = 50.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 蓝屏炸弹 ──
+
+[rule]
+rule_id = 12006
+name = "BlueScreen Bomber"
+description = "蓝屏炸弹：NtRaiseHardError + set critical + unsigned + temp origin"
+severity = "critical"
+threat_class = "Behavior/Impact:BlueScreen.Bomber.T1561"
+version = 1
+
+[rule.detection]
+threshold = 90.0
+min_match_count = 3
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_RAISE_HARD_ERROR"
+weight = 90.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_SET_CRITICAL"
+weight = 85.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_UNSIGNED"
+weight = 10.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 15.0
+required = false
+
+---
+
+# ── 设置关键进程 ──
+
+[rule]
+rule_id = 12007
+name = "Set Critical Process"
+description = "设置关键进程：RtlSetProcessIsCritical 防止终止"
+severity = "high"
+threat_class = "Behavior/Evasion:SetCritical.Generic"
+version = 1
+
+[rule.detection]
+threshold = 55.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_SET_CRITICAL"
+weight = 55.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 键盘钩子 ──
+
+[rule]
+rule_id = 12008
+name = "Keyboard Hook"
+description = "键盘钩子：SetWindowsHookEx WH_KEYBOARD 拦截按键"
+severity = "medium"
+threat_class = "Behavior/Evasion:KeyboardHook.Generic"
+version = 1
+
+[rule.detection]
+threshold = 35.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_KEYBOARD_HOOK"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 隐藏窗口 ──
+
+[rule]
+rule_id = 12009
+name = "Hidden Window Process"
+description = "创建隐藏窗口进程：CREATE_NO_WINDOW 标志"
+severity = "low"
+threat_class = "Behavior/Evasion:HiddenWindow.Generic"
+version = 1
+
+[rule.detection]
+threshold = 25.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_HIDDEN_WINDOW"
+weight = 25.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 脚本解释器异常执行 ──
+
+[rule]
+rule_id = 12010
+name = "Script Interpreter Anomaly"
+description = "脚本解释器异常执行：cscript/wscript/powershell 从临时目录运行"
+severity = "high"
+threat_class = "Behavior/Execution:ScriptAnomaly.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 2
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_SCRIPT_INTERPRETER"
+weight = 30.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 15.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_NETWORK_C2_CONNECT"
+weight = 20.0
+required = false
+
+---
+
+# ── Office 宏执行 ──
+
+[rule]
+rule_id = 12011
+name = "Office Macro Execution"
+description = "Office 宏执行：EXCEL/WORD 等通过 cmd/powershell 执行"
+severity = "high"
+threat_class = "Behavior/Execution:OfficeMacro.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_OFFICE_SPAWN_CMD"
+weight = 45.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── certutil 下载 ──
+
+[rule]
+rule_id = 12012
+name = "Certutil Download"
+description = "certutil -decode/-urlcache 下载载荷"
+severity = "high"
+threat_class = "Behavior/Execution:Certutil.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_CERTUTIL_DOWNLOAD"
+weight = 45.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── bitsadmin 下载 ──
+
+[rule]
+rule_id = 12013
+name = "Bitsadmin Transfer"
+description = "bitsadmin /transfer 下载载荷"
+severity = "high"
+threat_class = "Behavior/Execution:Bitsadmin.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_BITSADMIN_TRANSFER"
+weight = 45.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── msiexec 静默安装 ──
+
+[rule]
+rule_id = 12014
+name = "MSIExec Silent Install"
+description = "msiexec /quiet /i 静默安装：从可疑上下文执行"
+severity = "high"
+threat_class = "Behavior/Execution:MSIExec.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_MSIEXEC_SILENT_INSTALL"
+weight = 45.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── svchost 异常父进程 ──
+
+[rule]
+rule_id = 12015
+name = "Svchost Anomaly"
+description = "svchost.exe 异常父进程：非 services.exe 创建的 svchost"
+severity = "high"
+threat_class = "Behavior/Evasion:SvchostAnomaly.Generic"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_SVCHOST_ANOMALY"
+weight = 50.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── icacls 权限修改 ──
+
+[rule]
+rule_id = 12016
+name = "Icacls Permission Modification"
+description = "icacls 修改文件权限：清除 ACL 或添加完全控制"
+severity = "medium"
+threat_class = "Behavior/Evasion:Icacls.Generic"
+version = 1
+
+[rule.detection]
+threshold = 40.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_ICACLS_MODIFY"
+weight = 40.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 假更新安装器 ──
+
+[rule]
+rule_id = 12017
+name = "Fake Update Installer"
+description = "假更新安装器：伪装成软件更新的可执行文件"
+severity = "high"
+threat_class = "Behavior/Evasion:FakeUpdate.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FAKE_UPDATE_INSTALLER"
+weight = 45.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 银狐 BSOD 规避 ──
+
+[rule]
+rule_id = 12018
+name = "SilverFox BSOD Evasion"
+description = "银狐 BSOD 规避：set critical + kill security + injection + AppData origin"
+severity = "critical"
+threat_class = "Behavior/Impact:SilverFox.BsodEvasion.T1561"
+version = 1
+
+[rule.detection]
+threshold = 85.0
+min_match_count = 3
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_SET_CRITICAL"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_TASKKILL_SECURITY"
+weight = 25.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_INJECTION_CHAIN"
+weight = 30.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_APPDATA_DIR"
+weight = 10.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_UNSIGNED"
+weight = 10.0
+required = false
+
+---
+
+# ── 批量注册表删除 ──
+
+[rule]
+rule_id = 12019
+name = "Mass Registry Deletion"
+description = "批量删除注册表键：Winkiller 破坏行为"
+severity = "critical"
+threat_class = "Behavior/Impact:RegMassDelete.Generic"
+version = 1
+
+[rule.detection]
+threshold = 60.0
+min_match_count = 1
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_MASS_DELETE"
+weight = 60.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 批量注册表修改 ──
+
+[rule]
+rule_id = 12020
+name = "Mass Registry Modification"
+description = "短时间内批量修改注册表：Winkiller 持久化/破坏"
+severity = "high"
+threat_class = "Behavior/Impact:RegMassModify.Generic"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_MASS_MODIFY"
+weight = 50.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── VM 检测（时区）──
+
+[rule]
+rule_id = 12021
+name = "VM Detection via TimeZone"
+description = "通过 TimeZoneInformation 注册表检测虚拟机（T1497.003）"
+severity = "low"
+threat_class = "Behavior/Discovery:VMTimezone.Generic"
+version = 1
+
+[rule.detection]
+threshold = 25.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_VM_TZ_QUERY"
+weight = 25.0
+required = true
+
+---
+
+# ── VM 检测（BIOS）──
+
+[rule]
+rule_id = 12022
+name = "VM Detection via BIOS"
+description = "通过 BIOS 信息注册表检测虚拟机（T1497.001）"
+severity = "low"
+threat_class = "Behavior/Discovery:VMBIOS.Generic"
+version = 1
+
+[rule.detection]
+threshold = 25.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_VM_BIOS_QUERY"
+weight = 25.0
+required = true
+
+---
+
+# ── RDP 探测 ──
+
+[rule]
+rule_id = 12023
+name = "RDP Session Detection"
+description = "读取 Terminal Server 键探测 RDP 会话（T1021.001）"
+severity = "medium"
+threat_class = "Behavior/Discovery:RDPDetect.Generic"
+version = 1
+
+[rule.detection]
+threshold = 30.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_TS_KEY_READ"
+weight = 30.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── DSRM 密码查询 ──
+
+[rule]
+rule_id = 12024
+name = "DSRM Password Query"
+description = "读取 DSRM 密码（DCSync 前置 T1003.006）"
+severity = "critical"
+threat_class = "Behavior/CredentialAccess:DSRM.Generic"
+version = 1
+
+[rule.detection]
+threshold = 55.0
+min_match_count = 1
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_DS_REPLICATION_QUERY"
+weight = 55.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false

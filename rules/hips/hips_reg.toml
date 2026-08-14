@@ -1,0 +1,1240 @@
+# ── HIPS 注册表规则 — 完整规则集（来自 ServiceMain.cpp 嵌入式规则）──
+# rule_id 范围：1-104
+# 加载方式：LoadHipsRules() → IOCTL_ADD_RULE
+# 注意：此文件覆盖 rules/hips/hips_extended_reg.toml，不再单独加载扩展文件
+
+# ── 自启动与持久化 ──
+
+# 1. HKCU Run key - 用户级自启动
+[rule]
+rule_id = 1
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "HKCU Run"
+
+---
+
+# 2. HKCU RunOnce key
+[rule]
+rule_id = 2
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "HKCU RunOnce"
+
+---
+
+# 3. HKLM Run key
+[rule]
+rule_id = 3
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "HKLM Run"
+
+---
+
+# 4. HKLM RunOnce key
+[rule]
+rule_id = 4
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "HKLM RunOnce"
+
+---
+
+# 5. Winlogon Shell hijack
+[rule]
+rule_id = 5
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"
+value = "Shell"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "Winlogon Shell"
+
+---
+
+# 6. Winlogon Userinit hijack
+[rule]
+rule_id = 6
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"
+value = "Userinit"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "Winlogon Userinit"
+
+---
+
+# 7. IFEO Debugger hijack
+[rule]
+rule_id = 7
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\*"
+value = "*"
+flag = "SEF_UNSIGNED_BLOCKED"
+description = "IFEO Debugger"
+
+---
+
+# 8. Service registry write
+[rule]
+rule_id = 8
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SYSTEM\\CurrentControlSet\\Services\\*"
+value = "*"
+flag = "SEF_UNSIGNED_BLOCKED"
+description = "Service reg"
+
+---
+
+# 9. AppInit_DLLs global injection
+[rule]
+rule_id = 9
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Windows"
+value = "AppInit_DLLs"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "AppInit DLLs"
+
+---
+
+# 10. Browser home page hijack
+[rule]
+rule_id = 10
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Internet Explorer\\Main"
+value = "Start Page"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "IE hijack"
+
+---
+
+# 11. Winlogon Notify DLL - T1547.004
+[rule]
+rule_id = 11
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\Notify\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "Winlogon Notify DLL"
+
+---
+
+# 12. Print Provider hijack - T1547.008
+[rule]
+rule_id = 12
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Print\\Providers\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "Print Provider hijack"
+
+---
+
+# 13. Terminal Server InitialProgram - T1547.009
+[rule]
+rule_id = 13
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\Wds\\rdpwd"
+value = "InitialProgram"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "TS InitialProgram"
+
+---
+
+# 14. BootExecute - T1547.005
+[rule]
+rule_id = 14
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager"
+value = "BootExecute"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "BootExecute"
+
+---
+
+# 15. Explorer Run policy - T1547.010
+[rule]
+rule_id = 15
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer\\Run"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "Explorer Run policy"
+
+---
+
+# 16. DisableRegistryTools - T1562.001
+[rule]
+rule_id = 16
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"
+value = "DisableRegistryTools"
+flag = "SEF_ALL_BLOCKED"
+description = "DisableRegistryTools"
+
+---
+
+# 17. Firewall policy modify - T1562.004
+[rule]
+rule_id = 17
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SYSTEM\\CurrentControlSet\\Services\\SharedAccess\\Parameters\\FirewallPolicy\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "Firewall rule modify"
+
+---
+
+# 18. SafeBoot key delete - T1562.009
+[rule]
+rule_id = 18
+rule_type = "reg"
+op = "REG_OPERATION_DELETE"
+path = "\\REGISTRY\\MACHINE\\SYSTEM\\CurrentControlSet\\Control\\SafeBoot"
+value = "*"
+flag = "SEF_ALL_BLOCKED"
+description = "SafeMode key delete"
+
+---
+
+# 19. Security Provider hijack - T1547.003
+[rule]
+rule_id = 19
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Security Providers"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "Security Provider hijack"
+
+---
+
+# 20. GPO Scripts - T1547.007
+[rule]
+rule_id = 20
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Group Policy\\Scripts\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "GPO Scripts"
+
+---
+
+# 21. DisableTaskMgr (HKCU) - T1562.001
+[rule]
+rule_id = 21
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"
+value = "DisableTaskMgr"
+flag = "SEF_ALL_BLOCKED"
+description = "DisableTaskMgr HKCU"
+
+---
+
+# 22. DisableTaskMgr (HKLM)
+[rule]
+rule_id = 22
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"
+value = "DisableTaskMgr"
+flag = "SEF_ALL_BLOCKED"
+description = "DisableTaskMgr HKLM"
+
+---
+
+# 23. DisableCMD (HKCU)
+[rule]
+rule_id = 23
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"
+value = "DisableCMD"
+flag = "SEF_ALL_BLOCKED"
+description = "DisableCMD HKCU"
+
+---
+
+# 24. DisableCMD (HKLM)
+[rule]
+rule_id = 24
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"
+value = "DisableCMD"
+flag = "SEF_ALL_BLOCKED"
+description = "DisableCMD HKLM"
+
+---
+
+# 25. NoRun (HKCU)
+[rule]
+rule_id = 25
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "NoRun"
+flag = "SEF_ALL_BLOCKED"
+description = "Disable Run dialog HKCU"
+
+---
+
+# 26. NoRun (HKLM)
+[rule]
+rule_id = 26
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "NoRun"
+flag = "SEF_ALL_BLOCKED"
+description = "Disable Run dialog HKLM"
+
+---
+
+# 27. NoControlPanel
+[rule]
+rule_id = 27
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "NoControlPanel"
+flag = "SEF_ALL_BLOCKED"
+description = "Disable ControlPanel"
+
+---
+
+# 28. NoClose
+[rule]
+rule_id = 28
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "NoClose"
+flag = "SEF_ALL_BLOCKED"
+description = "Disable Shutdown"
+
+---
+
+# 29. NoLogoff
+[rule]
+rule_id = 29
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "NoLogoff"
+flag = "SEF_ALL_BLOCKED"
+description = "Disable Logoff"
+
+---
+
+# 30. DisableChangePassword
+[rule]
+rule_id = 30
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"
+value = "DisableChangePassword"
+flag = "SEF_ALL_BLOCKED"
+description = "Disable ChangePassword"
+
+---
+
+# 31. DisableLockWorkstation
+[rule]
+rule_id = 31
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"
+value = "DisableLockWorkstation"
+flag = "SEF_ALL_BLOCKED"
+description = "Disable LockWorkstation"
+
+---
+
+# 32. NoDispCPL
+[rule]
+rule_id = 32
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"
+value = "NoDispCPL"
+flag = "SEF_ALL_BLOCKED"
+description = "Disable DisplaySettings"
+
+---
+
+# 33. HKLM Classes SET - 文件关联修改
+[rule]
+rule_id = 33
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Classes\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "HKLM Classes assoc modify"
+
+---
+
+# 34. HKLM Classes DELETE - 文件关联删除
+[rule]
+rule_id = 34
+rule_type = "reg"
+op = "REG_OPERATION_DELETE"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Classes\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "HKLM Classes assoc delete"
+
+---
+
+# 35. HKCU Classes SET
+[rule]
+rule_id = 35
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Classes\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "HKCU Classes assoc modify"
+
+---
+
+# 36. HKCU Classes DELETE
+[rule]
+rule_id = 36
+rule_type = "reg"
+op = "REG_OPERATION_DELETE"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Classes\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "HKCU Classes assoc delete"
+
+---
+
+# 37. 文件类型命令修改 (HKLM)
+[rule]
+rule_id = 37
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Classes\\*\\shell\\*\\command"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "HKLM FileExeCmd hijack"
+
+---
+
+# 38. 文件类型命令修改 (HKCU)
+[rule]
+rule_id = 38
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Classes\\*\\shell\\*\\command"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "HKCU FileExeCmd hijack"
+
+---
+
+# 39. AppCompatFlags Custom shim - T1546.011
+[rule]
+rule_id = 39
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Custom\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "AppCompatFlags shim"
+
+---
+
+# 40. AppCompatFlags Layers (HKCU)
+[rule]
+rule_id = 40
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "AppCompatFlags Layers"
+
+---
+
+# 41. AppCompatFlags Layers (HKLM)
+[rule]
+rule_id = 41
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "AppCompatFlags Layers HKLM"
+
+---
+
+# 42. USBSTOR disable bypass
+[rule]
+rule_id = 42
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SYSTEM\\CurrentControlSet\\Services\\USBSTOR"
+value = "Start"
+flag = "SEF_ALL_BLOCKED"
+description = "USBSTOR disable bypass"
+
+---
+
+# 43. Windows Defender DisableAntiSpyware
+[rule]
+rule_id = 43
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows Defender"
+value = "DisableAntiSpyware"
+flag = "SEF_ALL_BLOCKED"
+description = "Defender DisableAntiSpyware"
+
+---
+
+# 44. Windows Defender Policy disable
+[rule]
+rule_id = 44
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows Defender"
+value = "DisableAntiSpyware"
+flag = "SEF_ALL_BLOCKED"
+description = "Defender Policy disable"
+
+---
+
+# 45. Windows Defender Real-Time Protection disable
+[rule]
+rule_id = 45
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows Defender\\Real-Time Protection"
+value = "DisableRealtimeMonitoring"
+flag = "SEF_ALL_BLOCKED"
+description = "Defender RTD disable"
+
+---
+
+# 46. Windows Defender Spynet reporting
+[rule]
+rule_id = 46
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows Defender\\Spynet"
+value = "SpyNetReporting"
+flag = "SEF_ALL_BLOCKED"
+description = "Defender Spynet disable"
+
+---
+
+# 47. Edge extension hijack
+[rule]
+rule_id = 47
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Edge\\Extensions\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "Edge extension hijack"
+
+---
+
+# 48. Chrome extension hijack
+[rule]
+rule_id = 48
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Google\\Chrome\\Extensions\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "Chrome extension hijack"
+
+---
+
+# 49. COM hijack HKCU - T1546.015
+[rule]
+rule_id = 49
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Classes\\CLSID\\*\\InprocServer32"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "COM hijack HKCU"
+
+---
+
+# 50. COM hijack HKLM - T1546.015
+[rule]
+rule_id = 50
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Classes\\CLSID\\*\\InprocServer32"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "COM hijack HKLM"
+
+---
+
+# 51. TimeProviders hijack - T1547.003
+[rule]
+rule_id = 51
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\TimeProviders\\*"
+value = "DllName"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "TimeProvider hijack"
+
+---
+
+# 52. Netsh helper DLL - T1546.007
+[rule]
+rule_id = 52
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Netsh"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "Netsh helper DLL"
+
+---
+
+# 53. Printer port DLL - T1547.012
+[rule]
+rule_id = 53
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Print\\Monitors\\*"
+value = "Driver"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "Print Monitor DLL"
+
+---
+
+# 54. Terminal Server Install - T1547.009
+[rule]
+rule_id = 54
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Terminal Server\\Install\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "TS Install hijack"
+
+---
+
+# 55. Office Security disable
+[rule]
+rule_id = 55
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Office\\*\\Security"
+value = "VBAWarnings"
+flag = "SEF_ALL_BLOCKED"
+description = "Office macro security disable"
+
+---
+
+# 56. UAC disable - T1548.002
+[rule]
+rule_id = 56
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"
+value = "EnableLUA"
+flag = "SEF_ALL_BLOCKED"
+description = "UAC disable"
+
+---
+
+# 57. SmartScreen disable
+[rule]
+rule_id = 57
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer"
+value = "SmartScreenEnabled"
+flag = "SEF_ALL_BLOCKED"
+description = "SmartScreen disable"
+
+---
+
+# 58. WMI namespace persistence - T1546.003
+[rule]
+rule_id = 58
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\WBEM\\CIMOM"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "WMI CIMOM hijack"
+
+---
+
+# 59. Schtasks cache modify
+[rule]
+rule_id = 59
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Schedule\\TaskCache\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "TaskCache hijack"
+
+---
+
+# 60. Windows NT Load 项
+[rule]
+rule_id = 60
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Windows"
+value = "Load"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "WinNt Load"
+
+---
+
+# 61. TelemetryController Command
+[rule]
+rule_id = 61
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\TelemetryController\\*"
+value = "Command"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "TelemetryController cmd"
+
+---
+
+# 62. Logon Script
+[rule]
+rule_id = 62
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\Environment"
+value = "UserInitMprLogonScript"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "Logon Script"
+
+---
+
+# 63. SilentProcessExit MonitorProcess
+[rule]
+rule_id = 63
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\SilentProcessExit\\*"
+value = "MonitorProcess"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "SilentProcessExit"
+
+---
+
+# 64. RunServices
+[rule]
+rule_id = 64
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunServices"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "HKLM RunServices"
+
+---
+
+# 65. RunServicesOnce
+[rule]
+rule_id = 65
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunServicesOnce"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "HKLM RunServicesOnce"
+
+---
+
+# 66. HKCU RunServices
+[rule]
+rule_id = 66
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunServices"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "HKCU RunServices"
+
+---
+
+# 67. Explorer Shell Folders Startup
+[rule]
+rule_id = 67
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell Folders"
+value = "Startup"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "Shell Folders Startup"
+
+---
+
+# 68. WOW6432Node Run
+[rule]
+rule_id = 68
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "WOW64 Run"
+
+---
+
+# 69. WOW6432Node RunOnce
+[rule]
+rule_id = 69
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\RunOnce"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "WOW64 RunOnce"
+
+---
+
+# 70. WOW6432Node AppInit_DLLs
+[rule]
+rule_id = 70
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion\\Windows"
+value = "AppInit_DLLs"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "WOW64 AppInit DLLs"
+
+---
+
+# 71. WOW6432Node Winlogon Shell
+[rule]
+rule_id = 71
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"
+value = "Shell"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "WOW64 Winlogon Shell"
+
+---
+
+# 72. WOW6432Node IFEO
+[rule]
+rule_id = 72
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\*"
+value = "*"
+flag = "SEF_UNSIGNED_BLOCKED"
+description = "WOW64 IFEO"
+
+---
+
+# 73. NoDesktop
+[rule]
+rule_id = 73
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "NoDesktop"
+flag = "SEF_ALL_BLOCKED"
+description = "Hide Desktop"
+
+---
+
+# 74. NoViewContextMenu
+[rule]
+rule_id = 74
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "NoViewContextMenu"
+flag = "SEF_ALL_BLOCKED"
+description = "Disable ContextMenu"
+
+---
+
+# 75. NoTrayContextMenu
+[rule]
+rule_id = 75
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "NoTrayContextMenu"
+flag = "SEF_ALL_BLOCKED"
+description = "Disable TrayMenu"
+
+---
+
+# 76. NoSetTaskbar
+[rule]
+rule_id = 76
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "NoSetTaskbar"
+flag = "SEF_ALL_BLOCKED"
+description = "Disable Taskbar"
+
+---
+
+# 77. NoFileMenu
+[rule]
+rule_id = 77
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "NoFileMenu"
+flag = "SEF_ALL_BLOCKED"
+description = "Disable FileMenu"
+
+---
+
+# 78. NoFolderOptions
+[rule]
+rule_id = 78
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "NoFolderOptions"
+flag = "SEF_ALL_BLOCKED"
+description = "Disable FolderOptions"
+
+---
+
+# 79. NoWinKeys
+[rule]
+rule_id = 79
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "NoWinKeys"
+flag = "SEF_ALL_BLOCKED"
+description = "Disable WinKeys"
+
+---
+
+# 80. StartMenuLogOff
+[rule]
+rule_id = 80
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "StartMenuLogOff"
+flag = "SEF_ALL_BLOCKED"
+description = "Hide Logoff"
+
+---
+
+# 81. RestrictRun
+[rule]
+rule_id = 81
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "RestrictRun"
+flag = "SEF_ALL_BLOCKED"
+description = "RestrictRun"
+
+---
+
+# 82. DisallowRun
+[rule]
+rule_id = 82
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "DisallowRun"
+flag = "SEF_ALL_BLOCKED"
+description = "DisallowRun"
+
+---
+
+# 83. NoDrives
+[rule]
+rule_id = 83
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "NoDrives"
+flag = "SEF_ALL_BLOCKED"
+description = "Hide Drives"
+
+---
+
+# 84. NoViewOnDrive
+[rule]
+rule_id = 84
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "NoViewOnDrive"
+flag = "SEF_ALL_BLOCKED"
+description = "NoViewOnDrive"
+
+---
+
+# 85. BCD 启动配置修改
+[rule]
+rule_id = 85
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\BCD00000000"
+value = "*"
+flag = "SEF_ALL_BLOCKED"
+description = "BCD modify"
+
+---
+
+# 86. PromptOnSecureDesktop
+[rule]
+rule_id = 86
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"
+value = "PromptOnSecureDesktop"
+flag = "SEF_ALL_BLOCKED"
+description = "UAC SecureDesktop"
+
+---
+
+# 87. SystemRestore DisableSR
+[rule]
+rule_id = 87
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\SystemRestore"
+value = "DisableSR"
+flag = "SEF_ALL_BLOCKED"
+description = "Disable SystemRestore"
+
+---
+
+# 88. SystemRestore DisableConfig
+[rule]
+rule_id = 88
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\SystemRestore"
+value = "DisableConfig"
+flag = "SEF_ALL_BLOCKED"
+description = "Disable SR Config"
+
+---
+
+# 89. Svchost 配置修改
+[rule]
+rule_id = 89
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Svchost"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "Svchost config"
+
+---
+
+# 90. ETW 配置修改
+[rule]
+rule_id = 90
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SYSTEM\\CurrentControlSet\\Control\\WMI\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "ETW config"
+
+---
+
+# 91. WINEVT 通道配置
+[rule]
+rule_id = 91
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WINEVT\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "WINEVT channel"
+
+---
+
+# 92. Deny_All U盘禁用
+[rule]
+rule_id = 92
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\RemovableStorageDevices"
+value = "Deny_All"
+flag = "SEF_ALL_BLOCKED"
+description = "USB Deny_All"
+
+---
+
+# 93. PolicyManager HideShutdown
+[rule]
+rule_id = 93
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\PolicyManager\\default\\Start\\HideShutdown"
+value = "value"
+flag = "SEF_ALL_BLOCKED"
+description = "Hide Shutdown"
+
+---
+
+# 94. PolicyManager HideRestart
+[rule]
+rule_id = 94
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\PolicyManager\\default\\Start\\HideRestart"
+value = "value"
+flag = "SEF_ALL_BLOCKED"
+description = "Hide Restart"
+
+---
+
+# 95. PolicyManager HideSleep
+[rule]
+rule_id = 95
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\PolicyManager\\default\\Start\\HideSleep"
+value = "value"
+flag = "SEF_ALL_BLOCKED"
+description = "Hide Sleep"
+
+---
+
+# 96. PolicyManager HideSignOut
+[rule]
+rule_id = 96
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\PolicyManager\\default\\Start\\HideSignOut"
+value = "value"
+flag = "SEF_ALL_BLOCKED"
+description = "Hide SignOut"
+
+---
+
+# 97. NoClose (HKLM)
+[rule]
+rule_id = 97
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "NoClose"
+flag = "SEF_ALL_BLOCKED"
+description = "Disable Shutdown HKLM"
+
+---
+
+# 98. NoLogoff (HKLM)
+[rule]
+rule_id = 98
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "NoLogoff"
+flag = "SEF_ALL_BLOCKED"
+description = "Disable Logoff HKLM"
+
+---
+
+# 99. HidePowerOptions
+[rule]
+rule_id = 99
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+value = "HidePowerOptions"
+flag = "SEF_ALL_BLOCKED"
+description = "Hide PowerOptions"
+
+---
+
+# 100. DisableRegistryTools (HKCU)
+[rule]
+rule_id = 100
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"
+value = "DisableRegistryTools"
+flag = "SEF_ALL_BLOCKED"
+description = "DisableRegistryTools HKCU"
+
+---
+
+# 101. DisableCMD (HKCU Policies\\System)
+[rule]
+rule_id = 101
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\USER\\*\\SOFTWARE\\Policies\\Microsoft\\Windows\\System"
+value = "DisableCMD"
+flag = "SEF_ALL_BLOCKED"
+description = "DisableCMD Policy"
+
+---
+
+# 102. LoadAppInit_DLLs
+[rule]
+rule_id = 102
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Windows"
+value = "LoadAppInit_DLLs"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "LoadAppInit_DLLs"
+
+---
+
+# 103. Winlogon Userinit (HKCU)
+[rule]
+rule_id = 103
+rule_type = "reg"
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"
+value = "Userinit"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "WOW64 Winlogon Userinit"

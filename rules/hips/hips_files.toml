@@ -1,0 +1,354 @@
+# ── HIPS 文件规则 — 完整规则集（来自 ServiceMain.cpp 嵌入式规则）──
+# rule_id 范围：201-230
+# 加载方式：LoadHipsRules() → IOCTL_ADD_FILE_RULE
+
+# ── 磁盘与系统目录保护 ──
+
+# 1. Physical disk raw write (MBR/VBR protection)
+[rule]
+rule_id = 201
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "\\Device\\PhysicalDrive"
+file = "*"
+ext = "*"
+flag = "SEF_ALL_BLOCKED"
+description = "PhysicalDisk write"
+
+---
+
+# 2. Drop exe into System32
+[rule]
+rule_id = 202
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Windows\\System32"
+file = "*"
+ext = "exe"
+flag = "SEF_UNSIGNED_BLOCKED"
+description = "System32 exe drop"
+
+---
+
+# 3. Drop driver sys into drivers directory
+[rule]
+rule_id = 203
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Windows\\System32\\drivers"
+file = "*"
+ext = "sys"
+flag = "SEF_UNSIGNED_BLOCKED"
+description = "Drivers sys drop"
+
+---
+
+# 4. Hosts file tampering
+[rule]
+rule_id = 204
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Windows\\System32\\drivers\\etc"
+file = "hosts"
+ext = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "Hosts file write"
+
+---
+
+# 5. Common startup folder write
+[rule]
+rule_id = 205
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup"
+file = "*"
+ext = "*"
+flag = "SEF_UNSIGNED_BLOCKED"
+description = "Startup folder"
+
+---
+
+# 6. Scheduled task directory
+[rule]
+rule_id = 206
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Windows\\System32\\Tasks"
+file = "*"
+ext = "*"
+flag = "SEF_UNSIGNED_BLOCKED"
+description = "Task Scheduler"
+
+---
+
+# 7. Volume shadow copy deletion
+[rule]
+rule_id = 207
+rule_type = "file"
+op = "FILE_OPERATION_DELETE"
+path = "C:\\Windows\\System32"
+file = "vssadmin.exe"
+ext = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "VSS delete"
+
+---
+
+# 8. Per-user startup folder write
+[rule]
+rule_id = 208
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\*\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup"
+file = "*"
+ext = "*"
+flag = "SEF_UNSIGNED_BLOCKED"
+description = "User Startup"
+
+---
+
+# 9. WMI MOF script write
+[rule]
+rule_id = 209
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Windows\\System32\\wbem"
+file = "*"
+ext = "mof"
+flag = "SEF_UNSIGNED_BLOCKED"
+description = "WMI mof"
+
+---
+
+# 10. Boot configuration write
+[rule]
+rule_id = 210
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "C:\\"
+file = "boot.ini"
+ext = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "Boot config"
+
+---
+
+# 11. PowerShell profile hijack - T1546.013
+[rule]
+rule_id = 211
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0"
+file = "profile"
+ext = "*"
+flag = "SEF_UNSIGNED_BLOCKED"
+description = "PowerShell profile hijack"
+
+---
+
+# 12. WMI repository deletion - T1562.002
+[rule]
+rule_id = 212
+rule_type = "file"
+op = "FILE_OPERATION_DELETE"
+path = "C:\\Windows\\System32\\wbem\\Repository"
+file = "*"
+ext = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+description = "WMI repository delete"
+
+---
+
+# 13. LSASS dump file in temp - T1003.002
+[rule]
+rule_id = 213
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\*\\AppData\\Local\\Temp"
+file = "*"
+ext = "dmp"
+flag = "SEF_UNSIGNED_BLOCKED"
+description = "LSASS dump file"
+
+---
+
+# 14. Accessibility tool hijack (sethc.exe) - T1546.008
+[rule]
+rule_id = 214
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Windows\\System32"
+file = "sethc.exe"
+ext = "*"
+flag = "SEF_ALL_BLOCKED"
+description = "Accessibility hijack"
+
+---
+
+# 15. System wallpaper delete
+[rule]
+rule_id = 215
+rule_type = "file"
+op = "FILE_OPERATION_DELETE"
+path = "C:\\Windows\\Web\\Wallpaper"
+file = "*"
+ext = "*"
+flag = "SEF_ALL_BLOCKED"
+description = "System wallpaper delete"
+
+---
+
+# 16. Public Downloads exe drop
+[rule]
+rule_id = 216
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\Public\\Downloads"
+file = "*"
+ext = "exe"
+flag = "SEF_UNSIGNED_BLOCKED"
+description = "Public Downloads exe drop"
+
+---
+
+# 17. WMI vbs script
+[rule]
+rule_id = 217
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Windows\\System32\\wbem"
+file = "*"
+ext = "vbs"
+flag = "SEF_UNSIGNED_BLOCKED"
+description = "WMI vbs script"
+
+---
+
+# 18. PowerShell profile PS1
+[rule]
+rule_id = 218
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\*\\Documents\\WindowsPowerShell"
+file = "*"
+ext = "ps1"
+flag = "SEF_UNSIGNED_BLOCKED"
+description = "User PS profile hijack"
+
+---
+
+# 19. Office macro template
+[rule]
+rule_id = 219
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\*\\AppData\\Roaming\\Microsoft\\Templates"
+file = "*"
+ext = "*"
+flag = "SEF_UNSIGNED_BLOCKED"
+description = "Office template hijack"
+
+---
+
+# 20. SAM file read
+[rule]
+rule_id = 220
+rule_type = "file"
+op = "FILE_OPERATION_READ"
+path = "C:\\Windows\\System32\\config"
+file = "SAM"
+ext = "*"
+flag = "SEF_ALL_BLOCKED"
+description = "SAM file read"
+
+---
+
+# 21. SYSTEM hive read
+[rule]
+rule_id = 221
+rule_type = "file"
+op = "FILE_OPERATION_READ"
+path = "C:\\Windows\\System32\\config"
+file = "SYSTEM"
+ext = "*"
+flag = "SEF_ALL_BLOCKED"
+description = "SYSTEM hive read"
+
+---
+
+# 22. SECURITY hive read
+[rule]
+rule_id = 222
+rule_type = "file"
+op = "FILE_OPERATION_READ"
+path = "C:\\Windows\\System32\\config"
+file = "SECURITY"
+ext = "*"
+flag = "SEF_ALL_BLOCKED"
+description = "SECURITY hive read"
+
+---
+
+# 23. Desktop shortcut modify (lnk)
+[rule]
+rule_id = 223
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\*\\Desktop"
+file = "*"
+ext = "lnk"
+flag = "SEF_UNSIGNED_BLOCKED"
+description = "Desktop lnk modify"
+
+---
+
+# 24. Desktop URL shortcut modify
+[rule]
+rule_id = 224
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\*\\Desktop"
+file = "*"
+ext = "url"
+flag = "SEF_UNSIGNED_BLOCKED"
+description = "Desktop url modify"
+
+---
+
+# 25. Public Desktop shortcut modify
+[rule]
+rule_id = 225
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\Public\\Desktop"
+file = "*"
+ext = "lnk"
+flag = "SEF_UNSIGNED_BLOCKED"
+description = "Public Desktop lnk"
+
+---
+
+# 26. User Startup folder write
+[rule]
+rule_id = 226
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "C:\\Users\\*\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup"
+file = "*"
+ext = "*"
+flag = "SEF_UNSIGNED_BLOCKED"
+description = "User Startup folder"
+
+---
+
+# 27. AllUsers Startup folder write
+[rule]
+rule_id = 227
+rule_type = "file"
+op = "FILE_OPERATION_WRITE"
+path = "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup"
+file = "*"
+ext = "*"
+flag = "SEF_UNSIGNED_BLOCKED"
+description = "AllUsers Startup folder"

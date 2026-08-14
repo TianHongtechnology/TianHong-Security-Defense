@@ -1,0 +1,127 @@
+# ── ElevationService 持久化劫持防护规则 (T1543.003 / T1546.015 / T1574.002)
+# 拦截对 Chromium 浏览器 elevation_service 注册表的修改，防止持久化劫持
+# rule_id 范围：8001-8007
+
+# ── Rule 8001: Chrome ElevationService CLSID 劫持 (SetValue) ──
+[rule]
+rule_id = 8001
+name = "ElevationService CLSID Hijack Set"
+description = "拦截 Chrome ElevationService CLSID {708860E0-*} 注册表修改 (T1546.015)"
+severity = "high"
+threat_class = "Persistence/ElevationServiceCLSID"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Classes\\CLSID\\{708860E0-*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 8002: Chrome ElevationService CLSID 劫持 (DeleteValue) ──
+[rule]
+rule_id = 8002
+name = "ElevationService CLSID Hijack Delete"
+description = "拦截 Chrome ElevationService CLSID {708860E0-*} 注册表删除 (T1546.015)"
+severity = "high"
+threat_class = "Persistence/ElevationServiceCLSID"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_DELETE"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Classes\\CLSID\\{708860E0-*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 8003: Wow64 ElevationService CLSID 劫持 ──
+[rule]
+rule_id = 8003
+name = "ElevationService CLSID Wow64 Hijack"
+description = "拦截 Wow64 下 Chrome ElevationService CLSID 注册表修改 (T1546.015)"
+severity = "high"
+threat_class = "Persistence/ElevationServiceCLSID"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Wow6432Node\\Classes\\CLSID\\{708860E0-*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 8004: ElevationService 服务配置修改 ──
+[rule]
+rule_id = 8004
+name = "ElevationService Registry Modify"
+description = "拦截 ElevationService 服务注册表修改 (T1543.003)"
+severity = "high"
+threat_class = "Persistence/ElevationServiceHijack"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SYSTEM\\CurrentControlSet\\Services\\*ElevationService*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 8005: ElevationService 服务配置删除 ──
+[rule]
+rule_id = 8005
+name = "ElevationService Registry Delete"
+description = "拦截 ElevationService 服务注册表删除 (T1543.003)"
+severity = "high"
+threat_class = "Persistence/ElevationServiceHijack"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_DELETE"
+path = "\\REGISTRY\\MACHINE\\SYSTEM\\CurrentControlSet\\Services\\*ElevationService*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 8006: Google Update Client 配置修改 ──
+[rule]
+rule_id = 8006
+name = "Google Update Client Hijack"
+description = "拦截 Google Update Client 注册表修改，用于 elevation_service 持久化 (T1543.003)"
+severity = "high"
+threat_class = "Persistence/GoogleUpdateHijack"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Google\\Update\\Clients\\*\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"
+
+---
+
+# ── Rule 8007: Microsoft Edge Update Client 配置修改 ──
+[rule]
+rule_id = 8007
+name = "Edge Update Client Hijack"
+description = "拦截 Edge Update Client 注册表修改，用于 elevation_service 持久化 (T1543.003)"
+severity = "high"
+threat_class = "Persistence/EdgeUpdateHijack"
+version = 1
+rule_type = "reg"
+
+[rule.params]
+op = "REG_OPERATION_SET"
+path = "\\REGISTRY\\MACHINE\\SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\*\\*"
+value = "*"
+flag = "SEF_NOT_SYSTEM_BLOCKED"

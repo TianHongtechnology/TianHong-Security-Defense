@@ -1,0 +1,124 @@
+# ── 进程类指标定义 ──
+# BA_IND_PROC_* 系列（从 g_baIndicatorScores 提取）
+
+[indicator]
+id = 1
+name = "BA_IND_PROC_FROM_TEMP_DIR"
+description = "进程从临时目录执行（%TEMP%, %TMP%）"
+category = 1    # BEC_PROCESS
+base_score = 10.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\Temp\\", "\\tmp\\", "%TEMP%", "%TMP%"]
+negate = false
+
+---
+
+[indicator]
+id = 2
+name = "BA_IND_PROC_FROM_APPDATA_DIR"
+description = "进程从 AppData 目录执行"
+category = 1
+base_score = 10.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\AppData\\", "\\appdata\\"]
+negate = false
+
+---
+
+[indicator]
+id = 9
+name = "BA_IND_PROC_UNSIGNED"
+description = "无数字签名的进程（仅 R0 签名状态）"
+category = 1
+base_score = 5.0
+is_dynamic = false
+
+---
+
+[indicator]
+id = 15
+name = "BA_IND_PROC_HIDDEN_WINDOW"
+description = "创建隐藏窗口的进程"
+category = 1
+base_score = 5.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "desired_access_has_flag"
+fields = ["desired_access"]
+values = ["0x0010"]   # CREATE_NO_WINDOW
+negate = false
+
+---
+
+[indicator]
+id = 18
+name = "BA_IND_PROC_BCDEDIT_RECOVERY_DISABLE"
+description = "禁用恢复控制台（bcedit /set {default} recoveryenabled No）"
+category = 1
+base_score = 35.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\bcdedit.exe"]
+negate = false
+
+---
+
+[indicator]
+id = 22
+name = "BA_IND_PROC_SCRIPT_INTERPRETER"
+description = "脚本解释器执行（CScript/WScript/PowrShell/Python/Perl）"
+category = 1
+base_score = 10.0
+is_dynamic = false
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\cscript.exe", "\\wscript.exe", "\\powershell.exe", "\\powershell_ise.exe",
+          "\\python.exe", "\\python3.exe", "\\perl.exe", "\\ruby.exe", "\\node.exe",
+          "\\mshta.exe", "\\regsvr32.exe"]
+negate = false
+
+---
+
+[indicator]
+id = 23
+name = "BA_IND_PROC_KILL_SECURITY_PROCESS"
+description = "终止安全相关进程（Smartscreen/Microsoft Defender）"
+category = 1
+base_score = 45.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\smartscreen.exe", "\\msmpeng.exe", "\\ MsMpSvc.exe"]
+negate = false
+
+---
+
+[indicator]
+id = 33
+name = "BA_IND_PROC_KEYBOARD_HOOK"
+description = "键盘钩子（SetWindowsHookEx WH_KEYBOARD / WH_KEYBOARD_LL）"
+category = 1
+base_score = 5.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "reg_op_eq"
+fields = ["reg_op"]
+values = ["0x01", "0x02"]   # KEY_SET_VALUE | KEY_CREATE_SUB_KEY
+negate = false

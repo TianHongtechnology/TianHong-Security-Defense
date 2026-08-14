@@ -1,0 +1,70 @@
+# ── 网络类指标定义 ──
+# BA_IND_NETWORK_C2_CONNECT / BA_IND_NET_* 系列
+#
+# 注意：这些指标由 Network 驱动通过 ETW 事件自动设置，
+# 不依赖 TOML 条件评估。condition_type 设为 "driver_managed" 表示
+# 指标由驱动端行为分析引擎自动管理，用户态规则文件仅引用指标 ID。
+
+[indicator]
+id = 35
+name = "BA_IND_NETWORK_C2_CONNECT"
+description = "C2 通信指标：可疑出站网络连接"
+category = 4    # BEC_NETWORK
+base_score = 30.0
+is_dynamic = true
+condition_type = "driver_managed"
+
+---
+
+[indicator]
+id = 82
+name = "BA_IND_NET_C2_CONNECT"
+description = "可疑出站连接到已知 C2 端口/IP"
+category = 4
+base_score = 35.0
+is_dynamic = true
+condition_type = "driver_managed"
+
+---
+
+[indicator]
+id = 83
+name = "BA_IND_NET_UNKNOWN_PORT"
+description = "连接到非标准/高风险端口"
+category = 4
+base_score = 15.0
+is_dynamic = true
+condition_type = "driver_managed"
+
+---
+
+[indicator]
+id = 84
+name = "BA_IND_NET_SUSPICIOUS_DNS"
+description = "可疑 DNS 查询模式（DGA/长子域名）"
+category = 4
+base_score = 20.0
+is_dynamic = true
+condition_type = "driver_managed"
+
+---
+
+[indicator]
+id = 85
+name = "BA_IND_NET_PROCESS_NETWORK"
+description = "进程具有网络活动 + 注入指标组合"
+category = 4
+base_score = 45.0
+is_dynamic = true
+condition_type = "driver_managed"
+
+---
+
+[indicator]
+id = 86
+name = "BA_IND_NET_LONG_CONNECTION"
+description = "长时间持久网络连接"
+category = 4
+base_score = 10.0
+is_dynamic = true
+condition_type = "driver_managed"

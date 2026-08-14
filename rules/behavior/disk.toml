@@ -1,0 +1,203 @@
+# ── Disk 动态规则：MBR/磁盘破坏检测
+# rule_id 范围：21000-21005
+# 来源：Disk 驱动 (TianHongHips.Disk) MBR 写入告警
+# 指标由驱动端自动设置，规则文件定义触发阈值
+
+[rule]
+rule_id = 21000
+name = "MBR Write Attempt"
+description = "进程尝试写入 MBR（主引导记录），可能为引导区病毒"
+severity = "critical"
+threat_class = "Impact:Bootkit"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 1
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_DISK_MBR_WRITE"
+weight = 50.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_BOOT_SECTOR"
+weight = 30.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_UNSIGNED"
+weight = 15.0
+required = false
+
+[[rule.exceptions]]
+image_path = "diskpart.exe"
+reason = "磁盘分区工具"
+
+[[rule.exceptions]]
+image_path = "fdisk.exe"
+reason = "磁盘分区工具"
+
+---
+
+[rule]
+rule_id = 21001
+name = "Boot Sector + MBR Combined Attack"
+description = "引导扇区 + MBR 组合攻击（高级 bootkit）"
+severity = "critical"
+threat_class = "Impact:AdvancedBootkit"
+version = 1
+
+[rule.detection]
+threshold = 60.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_DISK_MBR_WRITE"
+weight = 50.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_BOOT_SECTOR"
+weight = 40.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_DISK_RAW_ACCESS"
+weight = 30.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+[rule]
+rule_id = 21002
+name = "Raw Disk Access + Suspicious Context"
+description = "原始磁盘访问 + 可疑上下文（从临时目录运行）"
+severity = "high"
+threat_class = "Impact:DiskDestruction"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_DISK_RAW_ACCESS"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 15.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_HIDDEN_WINDOW"
+weight = 10.0
+required = false
+
+---
+
+[rule]
+rule_id = 21003
+name = "MBR Write + Persistence Mechanism"
+description = "MBR 写入 + 持久化机制（服务/注册表）"
+severity = "critical"
+threat_class = "Persistence:BootkitPersistence"
+version = 1
+
+[rule.detection]
+threshold = 65.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_DISK_MBR_WRITE"
+weight = 50.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_CREATE_SERVICE"
+weight = 25.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_UNSIGNED"
+weight = 15.0
+required = false
+
+---
+
+[rule]
+rule_id = 21004
+name = "Disk Destruction Chain"
+description = "磁盘破坏链：MBR 写入 + 文件删除 + 系统目录创建"
+severity = "critical"
+threat_class = "Impact:DiskWiper"
+version = 1
+
+[rule.detection]
+threshold = 70.0
+min_match_count = 3
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_DISK_MBR_WRITE"
+weight = 50.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_MASS_SYSTEM_DELETE"
+weight = 30.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_CREATE_SYSTEM_DIR"
+weight = 20.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+[rule]
+rule_id = 21005
+name = "Suspicious PhysicalDrive Access"
+description = "可疑 PhysicalDrive 访问（非系统进程访问物理磁盘）"
+severity = "high"
+threat_class = "Impact:PhysicalDiskAccess"
+version = 1
+
+[rule.detection]
+threshold = 40.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_DISK_RAW_ACCESS"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_UNSIGNED"
+weight = 15.0
+required = false
+
+[[rule.exceptions]]
+image_path = "chkdsk.exe"
+reason = "磁盘检查工具"
+
+[[rule.exceptions]]
+image_path = "defrag.exe"
+reason = "磁盘碎片整理"

@@ -1,0 +1,116 @@
+# ── 注册表类指标定义 ──
+# BA_IND_REG_* 系列
+
+[indicator]
+id = 20
+name = "BA_IND_REG_MODIFY_AUTOEXEC"
+description = "修改 Autoexec.bat 实现持久化（Win9x 兼容路径）"
+category = 3    # BEC_REGISTRY
+base_score = 30.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "reg_op_eq"
+fields = ["reg_path"]
+values = ["\\Autoexec.bat"]
+negate = false
+
+---
+
+[indicator]
+id = 21
+name = "BA_IND_REG_MODIFY_RUN_KEY"
+description = "修改 Run/RunOnce 注册表键实现进程持久化"
+category = 3
+base_score = 15.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "reg_op_eq"
+fields = ["reg_path"]
+values = ["\\Registry\\Machine\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+          "\\Registry\\Machine\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce",
+          "\\Registry\\User\\{S-1-5-21-...}\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+          "\\Registry\\User\\{S-1-5-21-...}\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce"]
+negate = false
+
+---
+
+[indicator]
+id = 24
+name = "BA_IND_REG_MODIFY_WINLOGON"
+description = "修改 Winlogon 壳（Userinit/Shell）实现持久化"
+category = 3
+base_score = 45.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "reg_op_eq"
+fields = ["reg_path"]
+values = ["\\Registry\\Machine\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\Userinit",
+          "\\Registry\\Machine\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\Shell"]
+negate = false
+
+---
+
+[indicator]
+id = 25
+name = "BA_IND_REG_MODIFY_IFEO_DEBUGGER"
+description = "修改 IFEO Debugger 实现进程劫持"
+category = 3
+base_score = 35.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "reg_op_eq"
+fields = ["reg_path"]
+values = ["\\Registry\\Machine\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options"]
+negate = false
+
+---
+
+[indicator]
+id = 28
+name = "BA_IND_REG_CREATE_SERVICE"
+description = "创建系统服务（SC_CreateService）"
+category = 3
+base_score = 20.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "reg_op_eq"
+fields = ["reg_op"]
+values = ["0x03"]   # SERVICE_ALL_ACCESS
+negate = false
+
+---
+
+[indicator]
+id = 38
+name = "BA_IND_REG_MODIFY_SHELL_OPEN"
+description = "修改 HKCR 文件关联（ShellOpen）劫持文件打开行为"
+category = 3
+base_score = 25.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "reg_op_eq"
+fields = ["reg_path"]
+values = ["\\Registry\\User\\{S-1-5-21-...}\\SOFTWARE\\Classes\\*\\shell\\open\\command"]
+negate = false
+
+---
+
+[indicator]
+id = 44
+name = "BA_IND_REG_SCHEDULED_TASK_CREATE"
+description = "创建计划任务（schtasks / schtasks.exe）"
+category = 3
+base_score = 15.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\schtasks.exe", "\\schtasks.com"]
+negate = false

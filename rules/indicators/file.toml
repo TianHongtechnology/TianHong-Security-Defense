@@ -1,0 +1,197 @@
+# ── 文件类指标定义 ──
+# BA_IND_FILE_* 系列
+
+[indicator]
+id = 3
+name = "BA_IND_FILE_CREATE_STARTUP_EXE"
+description = "在启动文件夹创建可执行文件"
+category = 2    # BEC_FILE
+base_score = 20.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["file_dir"]
+values = ["\\Startup\\", "\\Start Menu\\Programs\\Startup\\",
+          "\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\"]
+negate = false
+
+---
+
+[indicator]
+id = 6
+name = "BA_IND_FILE_CREATE_SYSTEM_DIR"
+description = "在系统目录创建文件（System32）"
+category = 2
+base_score = 20.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["file_dir"]
+values = ["\\Windows\\System32", "\\Windows\\SysWOW64"]
+negate = false
+
+---
+
+[indicator]
+id = 7
+name = "BA_IND_FILE_CREATE_DLL_HIJACK"
+description = "创建 DLL 劫持文件"
+category = 2
+base_score = 25.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "file_ext_eq"
+fields = ["file_ext"]
+values = [".dll"]
+negate = false
+
+---
+
+[indicator]
+id = 12
+name = "BA_IND_FILE_DROP_FROM_TEMP"
+description = "从临时目录释放文件到目标位置"
+category = 2
+base_score = 15.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\Temp\\", "\\tmp\\"]
+negate = false
+
+---
+
+[indicator]
+id = 14
+name = "BA_IND_FILE_SELF_DELETE"
+description = "自我删除（删除自身二进制）"
+category = 2
+base_score = 25.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["file_path"]
+values = []
+negate = false
+# 实现说明：当 file_op == DELETE 且 file_path 匹配 image_path 时触发
+
+---
+
+[indicator]
+id = 16
+name = "BA_IND_FILE_BROWSER_CRED_TARGET"
+description = "浏览器凭据目标文件（登录凭据存储）"
+category = 2
+base_score = 20.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["file_path"]
+values = ["\\Local State\\Login Data", "\\LoginData", "\\Cookies",
+          "\\WebData", "\\History", "\\Preferences"]
+negate = false
+
+---
+
+[indicator]
+id = 17
+name = "BA_IND_FILE_NETWORK_SHARE"
+description = "网络共享写入（\\\\server\\share）"
+category = 2
+base_score = 15.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["file_path"]
+values = ["\\\\"]
+negate = false
+
+---
+
+[indicator]
+id = 19
+name = "BA_IND_FILE_RANSOM_NOTE"
+description = "勒索软件提示文件（.txt/.hta 勒索信）"
+category = 2
+base_score = 30.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "file_ext_in_list"
+fields = ["file_ext"]
+values = [".txt", ".hta", ".html", ".readme", ".restore"]
+negate = false
+
+---
+
+[indicator]
+id = 26
+name = "BA_IND_FILE_APPDATA_DLL"
+description = "在 AppData 目录创建 DLL"
+category = 2
+base_score = 20.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["file_dir"]
+values = ["\\AppData\\", "\\appdata\\"]
+negate = false
+# 且 file_ext == .dll
+
+---
+
+[indicator]
+id = 47
+name = "BA_IND_FILE_DLL_SIDE_LOAD"
+description = "DLL Side-Loading（同名 DLL 劫持）"
+category = 2
+base_score = 25.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["file_path"]
+values = []
+negate = false
+# 实现说明：创建的文件与已加载模块同名
+
+---
+
+[indicator]
+id = 48
+name = "BA_IND_FILE_SIGNED_BINARY_PROXY"
+description = "签名二进制代理执行（Mimikatz 签名代理）"
+category = 2
+base_score = 35.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "path_contains"
+fields = ["image_path"]
+values = ["\\mimikatz.exe", "\\sekurlsa.exe", "\\privilege.exe"]
+negate = false
+
+---
+
+[indicator]
+id = 52
+name = "BA_IND_FILE_BOOT_EXECUTE"
+description = "创建 bootExecute 注册表项（AutoChk 执行）"
+category = 2
+base_score = 30.0
+is_dynamic = true
+
+[indicator.conditions]
+condition_type = "reg_op_eq"
+fields = ["reg_path"]
+values = ["\\Registry\\Machine\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\AutoChk"]
+negate = false

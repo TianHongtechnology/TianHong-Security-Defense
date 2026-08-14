@@ -1,0 +1,160 @@
+# ── Network 动态规则：C2 通信检测
+# rule_id 范围：20000-20004
+# 来源：Network 驱动 (WFP Callout) + ETW Network 事件
+# 指标由驱动端自动设置，规则文件定义触发阈值和上下文过滤
+
+[rule]
+rule_id = 20000
+name = "C2 Communication via Known Port"
+description = "进程连接到已知 C2 端口（4444/8888/31337 等）"
+severity = "critical"
+threat_class = "CommandAndControl:C2Connection"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 1
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_C2_CONNECT"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_NETWORK_C2_CONNECT"
+weight = 30.0
+required = false
+
+[rule.detection.context]
+exclude_parent_name = "wmic.exe"
+exclude_parent_name = "curl.exe"
+exclude_parent_name = "wget.exe"
+
+---
+
+[rule]
+rule_id = 20001
+name = "Suspicious DNS Query Pattern"
+description = "可疑 DNS 查询模式（DGA/长子域名/高熵域名）"
+severity = "high"
+threat_class = "CommandAndControl:DNSExfiltration"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 2
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_SUSPICIOUS_DNS"
+weight = 20.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_UNKNOWN_PORT"
+weight = 15.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+[rule]
+rule_id = 20002
+name = "DoH C2 Tunnel"
+description = "通过 DNS over HTTPS (DoH) 建立 C2 隧道"
+severity = "critical"
+threat_class = "CommandAndControl:DoHTunnel"
+version = 1
+
+[rule.detection]
+threshold = 55.0
+min_match_count = 1
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_C2_CONNECT"
+weight = 40.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_PROCESS_NETWORK"
+weight = 25.0
+required = false
+
+[[rule.exceptions]]
+image_path = "chrome.exe"
+reason = "Chrome 浏览器正常 DoH"
+
+[[rule.exceptions]]
+image_path = "msedge.exe"
+reason = "Edge 浏览器正常 DoH"
+
+---
+
+[rule]
+rule_id = 20003
+name = "Large Data Exfiltration via Network"
+description = "大流量网络外传（HTTP POST 大数据包）"
+severity = "high"
+threat_class = "Exfiltration:NetworkExfil"
+version = 1
+
+[rule.detection]
+threshold = 40.0
+min_match_count = 2
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_PROCESS_NETWORK"
+weight = 30.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_DATA_STAGED"
+weight = 20.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+[rule]
+rule_id = 20004
+name = "Network Reconnaissance + C2"
+description = "网络侦察后建立 C2 连接（横向移动前兆）"
+severity = "high"
+threat_class = "LateralMovement:NetworkReconC2"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 2
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_C2_CONNECT"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_UNKNOWN_PORT"
+weight = 15.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_HIDDEN_WINDOW"
+weight = 10.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_UNSIGNED"
+weight = 15.0
+required = false

@@ -1,0 +1,650 @@
+# ── 影响与破坏检测规则 ──
+# rule_id 范围：15000-15019
+
+# ── 勒索软件批量加密 ──
+
+[rule]
+rule_id = 15000
+name = "Ransomware Bulk Encryption"
+description = "勒索软件批量加密：短时间内大量文件写入 + 加密扩展名 + C2 通信"
+severity = "critical"
+threat_class = "Behavior/Ransomware:BulkEncryption.Generic"
+version = 1
+
+[rule.detection]
+threshold = 80.0
+min_match_count = 3
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_BULK_WRITE"
+weight = 40.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_ENCRYPTED_EXTENSION"
+weight = 30.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_NETWORK_C2_CONNECT"
+weight = 20.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 勒索软件文件加密 ──
+
+[rule]
+rule_id = 15001
+name = "Ransomware File Encryption"
+description = "勒索软件：批量文件加密 + 删除卷影副本"
+severity = "critical"
+threat_class = "Behavior/Ransomware:VSSShadowDelete.Generic"
+version = 1
+
+[rule.detection]
+threshold = 70.0
+min_match_count = 3
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_ENCRYPTED_EXTENSION"
+weight = 40.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_RANSOM_NOTE"
+weight = 30.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_VSSADMIN_SHADOW_DELETE"
+weight = 30.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 勒索提示文件 ──
+
+[rule]
+rule_id = 15002
+name = "Ransom Note Creation"
+description = "勒索提示文件创建：.txt/.hta/.html 勒索信"
+severity = "critical"
+threat_class = "Behavior/Ransomware:RansomNote.Generic"
+version = 1
+
+[rule.detection]
+threshold = 55.0
+min_match_count = 1
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_RANSOM_NOTE"
+weight = 55.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 磁盘破坏链 ──
+
+[rule]
+rule_id = 15003
+name = "Disk Destruction Chain"
+description = "磁盘破坏链：MBR 写入 + 文件删除 + 系统目录创建"
+severity = "critical"
+threat_class = "Behavior/Impact:DiskWiper.Generic"
+version = 1
+
+[rule.detection]
+threshold = 70.0
+min_match_count = 3
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_DISK_MBR_WRITE"
+weight = 50.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_MASS_SYSTEM_DELETE"
+weight = 30.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_CREATE_SYSTEM_DIR"
+weight = 20.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 批量文件删除 ──
+
+[rule]
+rule_id = 15004
+name = "Mass File Deletion"
+description = "批量文件删除：短时间内大量文件删除（Winkiller 行为）"
+severity = "critical"
+threat_class = "Behavior/Impact:MassDelete.Generic"
+version = 1
+
+[rule.detection]
+threshold = 60.0
+min_match_count = 1
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_MASS_SYSTEM_DELETE"
+weight = 60.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 系统目录文件删除 ──
+
+[rule]
+rule_id = 15005
+name = "System Directory File Deletion"
+description = "系统目录文件删除：删除 System32 等关键文件"
+severity = "critical"
+threat_class = "Behavior/Impact:SystemDirDelete.Generic"
+version = 1
+
+[rule.detection]
+threshold = 55.0
+min_match_count = 1
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_MASS_SYSTEM_DELETE"
+weight = 55.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_CREATE_SYSTEM_DIR"
+weight = 20.0
+required = false
+
+---
+
+# ── 引导扇区攻击 ──
+
+[rule]
+rule_id = 15006
+name = "Boot Sector Attack"
+description = "引导扇区攻击：写入引导扇区 + MBR"
+severity = "critical"
+threat_class = "Behavior/Impact:BootSector.Generic"
+version = 1
+
+[rule.detection]
+threshold = 65.0
+min_match_count = 2
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_BOOT_SECTOR"
+weight = 50.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_DISK_MBR_WRITE"
+weight = 50.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 原始磁盘访问 ──
+
+[rule]
+rule_id = 15007
+name = "Raw Disk Access"
+description = "原始磁盘访问：直接读写物理磁盘（非系统工具）"
+severity = "high"
+threat_class = "Behavior/Impact:RawDisk.Generic"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_DISK_RAW_ACCESS"
+weight = 50.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 物理磁盘访问 ──
+
+[rule]
+rule_id = 15008
+name = "Physical Disk Access"
+description = "PhysicalDrive 访问：非系统进程访问物理磁盘设备"
+severity = "high"
+threat_class = "Behavior/Impact:PhysicalDisk.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_DISK_RAW_ACCESS"
+weight = 45.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_UNSIGNED"
+weight = 15.0
+required = false
+
+---
+
+# ── 数据 staged 外传 ──
+
+[rule]
+rule_id = 15009
+name = "Data Staging for Exfiltration"
+description = "数据打包外传：先收集数据再通过网络外传"
+severity = "high"
+threat_class = "Behavior/Exfiltration:DataStaging.Generic"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 2
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_DATA_STAGED"
+weight = 30.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_PROCESS_NETWORK"
+weight = 30.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 自我删除 ──
+
+[rule]
+rule_id = 15010
+name = "Self Deletion"
+description = "自我删除：恶意软件删除自身二进制"
+severity = "high"
+threat_class = "Behavior/Evasion:SelfDelete.Generic"
+version = 1
+
+[rule.detection]
+threshold = 50.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_SELF_DELETE"
+weight = 50.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 从临时目录释放 ──
+
+[rule]
+rule_id = 15011
+name = "Temp Directory Drop"
+description = "从临时目录释放文件：恶意软件从 %TEMP% 释放载荷"
+severity = "medium"
+threat_class = "Behavior/Execution:TempDrop.Generic"
+version = 1
+
+[rule.detection]
+threshold = 35.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_DROP_FROM_TEMP"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── DLL 劫持创建 ──
+
+[rule]
+rule_id = 15012
+name = "DLL Hijack Creation"
+description = "DLL 劫持文件创建：在程序目录创建同名 DLL"
+severity = "high"
+threat_class = "Behavior/Evasion:DllHijack.Generic"
+version = 1
+
+[rule.detection]
+threshold = 45.0
+min_match_count = 1
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_CREATE_DLL_HIJACK"
+weight = 45.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 下载器链 ──
+
+[rule]
+rule_id = 15013
+name = "Downloader Chain"
+description = "下载器链：certutil/bitsadmin 下载 + 执行 + C2"
+severity = "high"
+threat_class = "Behavior/Execution:Downloader.Generic"
+version = 1
+
+[rule.detection]
+threshold = 55.0
+min_match_count = 2
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_CERTUTIL_DOWNLOAD"
+weight = 30.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_BITSADMIN_TRANSFER"
+weight = 30.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_NETWORK_C2_CONNECT"
+weight = 30.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 银狐 dropper ──
+
+[rule]
+rule_id = 15014
+name = "SilverFox Dropper"
+description = "银狐 dropper：temp/AppData exe drop + DLL side-load + browser creds + Run key"
+severity = "critical"
+threat_class = "Behavior/Trojan:SilverFox.Dropper"
+version = 1
+
+[rule.detection]
+threshold = 75.0
+min_match_count = 3
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_DROP_FROM_TEMP"
+weight = 20.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_DLL_SIDE_LOAD"
+weight = 25.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_BROWSER_CRED_TARGET"
+weight = 20.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_MODIFY_RUN_KEY"
+weight = 20.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 银狐 phishing ──
+
+[rule]
+rule_id = 15015
+name = "SilverFox Phishing"
+description = "银狐 phishing：键盘钩子 + 浏览器凭据 + 计划任务"
+severity = "critical"
+threat_class = "Behavior/Trojan:SilverFox.Phishing"
+version = 1
+
+[rule.detection]
+threshold = 70.0
+min_match_count = 3
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_KEYBOARD_HOOK"
+weight = 25.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_BROWSER_CRED_TARGET"
+weight = 25.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_SCHEDULED_TASK_CREATE"
+weight = 20.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 银狐 credential exfil ──
+
+[rule]
+rule_id = 15016
+name = "SilverFox Credential Exfil"
+description = "银狐凭据外传：浏览器凭据 + 键盘钩子 + C2 + AppData origin"
+severity = "critical"
+threat_class = "Behavior/Trojan:SilverFox.CredExfil"
+version = 1
+
+[rule.detection]
+threshold = 75.0
+min_match_count = 3
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_BROWSER_CRED_TARGET"
+weight = 30.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_KEYBOARD_HOOK"
+weight = 25.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_NET_C2_CONNECT"
+weight = 30.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_APPDATA_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 银狐 注入规避 ──
+
+[rule]
+rule_id = 15017
+name = "SilverFox Injection Evasion"
+description = "银狐注入规避：kill security + injection + unsigned + temp origin"
+severity = "critical"
+threat_class = "Behavior/Evasion:SilverFox.EvasionCombo.T1055"
+version = 1
+
+[rule.detection]
+threshold = 80.0
+min_match_count = 3
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_KILL_SECURITY_PROCESS"
+weight = 30.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_MEM_INJECTION_CHAIN"
+weight = 35.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_UNSIGNED"
+weight = 10.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 银狐 DLL side-load ──
+
+[rule]
+rule_id = 15018
+name = "SilverFox DLL Side-Load"
+description = "银狐 DLL side-loading：合法 EXE + 恶意 DLL + 系统目录写入 + 持久化"
+severity = "critical"
+threat_class = "Behavior/Trojan:SilverFox.DllSideLoad"
+version = 1
+
+[rule.detection]
+threshold = 70.0
+min_match_count = 3
+direct_malicious = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_DLL_SIDE_LOAD"
+weight = 30.0
+required = true
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_CREATE_SYSTEM_DIR"
+weight = 20.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_REG_MODIFY_RUN_KEY"
+weight = 20.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
+
+---
+
+# ── 银狐 通用检测 ──
+
+[rule]
+rule_id = 15019
+name = "SilverFox Generic"
+description = "银狐通用检测：伪装目录投放 + 随机文件名（家族特征）"
+severity = "high"
+threat_class = "Behavior/Trojan:SilverFox.Generic"
+version = 1
+
+[rule.detection]
+threshold = 55.0
+min_match_count = 2
+direct_malicious = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_FAKE_DIR_DROP"
+weight = 30.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_FILE_TEMP_RANDOM_NAME_EXE"
+weight = 30.0
+required = false
+
+[[rule.detection.indicators]]
+id = "BA_IND_PROC_FROM_TEMP_DIR"
+weight = 10.0
+required = false
