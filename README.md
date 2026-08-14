@@ -1,4 +1,4 @@
-# 天鸿安全防御 TianHong Security Defense
+# 天宏安全防御 TianHong Security Defense
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11%20x64-blue)]()
@@ -34,7 +34,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│         天鸿安全防御主程序 (TianHong-Security-Defense)      │
+│         天宏安全防御主程序 (TianHong-Security-Defense)      │
 │                    Qt 6 GUI 界面                         │
 └──────────────────┬──────────────────────────────────────┘
                    │ IPC (本地回环 Socket 通信)
