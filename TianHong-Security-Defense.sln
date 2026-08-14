@@ -14,7 +14,7 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "TianHongDefenseKernelProtec
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "TianHongDefenseKernelProtectionClient", "TianHongDefenseKernelProtectionClient\TianHongDefenseKernelProtectionClient.vcxproj", "{250886DC-808D-42B6-B8B3-BBEE9814920A}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "TianHongDefenseKernelProtectionDisk", "TianHongDefenseKernelProtectionDisk\TianHongDefenseKernelProtectionDisk.vcxproj", "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "TianHongDefenseKernelProtection.Disk", "TianHongDefenseKernelProtection.Disk\TianHongDefenseKernelProtection.Disk.vcxproj", "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "TianHongDefenseKernelProtection.Network", "TianHongDefenseKernelProtection.Network\TianHongDefenseKernelProtection.Network.vcxproj", "{91AF2CCB-CEC0-0CD8-9178-A8165CDA5E35}"
 EndProject
