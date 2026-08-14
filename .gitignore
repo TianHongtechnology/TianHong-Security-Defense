@@ -3,6 +3,8 @@ x64/
 **/x64/
 **/build/
 **/Release/
+!Release/
+!Release/**
 **/Debug/
 **/*.lib
 **/*.exp
@@ -36,13 +38,10 @@ x64/
 **/whitedir.cache
 **/cache*
 **/malware.sha256
-**/Malware.yara
-**/MalwareMemory.yara
-**/Malware.yarac
-**/MalwareMemory.yarac
-**/yarac64.exe
 **/sha256数据库添加.ps1
 **/nSpy.exe
+# 仅排除 x64\Release\Resources\BinaryFiles\ 下的 certmgr.exe（Release\ 下的需要跟踪）
+**/x64/Release/Resources/BinaryFiles/certmgr.exe
 
 # ===== Virus Samples (DO NOT COMMIT) =====
 Danger_To_Run/

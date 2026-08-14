@@ -222,24 +222,15 @@ TianHong-Security-Defense/
 │       ├── Comm.cpp                  # 通信层
 │       └── DynamicRuleLoader.cpp     # 动态规则加载
 │
-├── rules/                            # 规则与模型文件（大文件已排除在 git 外）
-│   ├── Yara/                         # YARA 规则
-│   │   ├── Malware.yarac             # PE 扫描规则（~78MB）
-│   │   └── MalwareMemory.yarac       # 内存扫描规则
-│   ├── Model/                        # LightGBM 模型
-│   │   ├── Heur.data.base            # 模型基础数据
-│   │   ├── Heur.data.extra           # 模型扩展数据
-│   │   └── Heur.data.config          # 模型配置
+├── rules/                            # 规则与模型文件（Git LFS 跟踪）
+│   ├── Model/                        # LightGBM 模型文件
 │   ├── malware.sha256                # 恶意软件哈希库
 │   └── white.sha256                  # 安全文件哈希白名单
 │
-├── ExternalBinaries/                 # 外部依赖 DLL（需手动复制到输出目录）
-│   ├── MSVC 运行时                    # vcruntime140.dll 等
-│   ├── Qt 核心库                      # Qt6Core.dll 等
-│   ├── Qt 插件                        # platforms/imageformats/tls 等
+├── Release/                          # 外部依赖二进制（不在编译名单内且正常无法成套获得）
 │   ├── ElaWidgetTools.dll            # Qt 扩展组件库
-│   ├── 第三方依赖 DLL                 # libcurl, libarchive, libxml2 等
-│   └── Resources/                    # 配套资源文件
+│   ├── certmgr.exe                   # 证书管理工具
+│   └── libclamav.dll 等              # ClamAV 运行时依赖 DLL
 │
 ├── LICENSE                           # MIT License
 ├── README.md                         # 本文件
@@ -349,15 +340,34 @@ PROCESS_CHECK_RESP - 进程预检响应
 
 > 详细规则文件说明见 [rules/README.md](rules/README.md)。
 
-### 外部依赖 DLL
+### 外部依赖二进制
 
-程序还需要以下外部 DLL（MSVC 运行时、Qt、第三方库等），这些文件**不会由编译步骤自动生成**，需从根目录的 `ExternalBinaries\` 文件夹手动复制到程序输出目录（与 `TianHong-Security-Defense.exe` 同级）：
+程序运行时需要以下**不在编译名单内且正常无法成套获得**的文件，它们存放在根目录的 `Release\` 文件夹中，需手动复制到程序输出目录（与 `TianHong-Security-Defense.exe` 同级）：
 
 ```powershell
-xcopy /E /I /Y "ExternalBinaries\*" "x64\Release\"
+xcopy /E /I /Y "Release\*" "x64\Release\"
+xcopy /E /I /Y "Release\certmgr.exe" "x64\Release\Resources\BinaryFiles\"
 ```
 
-> **⚠️ 免责声明**：`ExternalBinaries\` 下的所有 PE 文件（.dll、.exe）均来自第三方开源项目或系统组件，仅供本项目运行时依赖使用。作者不对这些文件的来源安全性、无毒状态做任何保证，使用者应自行评估风险，建议在虚拟机中运行。详见 [ExternalBinaries/README.md](ExternalBinaries/README.md)。
+| 文件 | 来源 | 说明 |
+|------|------|------|
+| `ElaWidgetTools.dll` | [ElaWidgetTools](https://github.com/Ellise961/ElaWidgetTools) | Qt 扩展组件库 |
+| `certmgr.exe` | Windows SDK | 证书管理工具 |
+| `libclamav.dll` 及其依赖 | ClamAV / libcurl / OpenSSL 等 | ClamAV 扫描引擎运行时 |
+
+> **⚠️ 免责声明**：`Release\` 下的所有 PE 文件（.dll、.exe）均来自第三方开源项目或系统组件，仅供本项目运行时依赖使用。作者不对这些文件的来源安全性、无毒状态做任何保证，使用者应自行评估风险，建议在虚拟机中运行。详见 [Release/README.md](Release/README.md)。
+
+### ⚠️ 使用 Qt 自带功能补充 PE 文件（重要）
+
+**Qt 核心库、插件目录和 MSVC 运行时不在 `Release\` 中**，这些是正常可获得的常见依赖，请使用 **Qt 自带部署工具 `windeployqt`** 自动补充，无需手动复制：
+
+```powershell
+# 打开 "Qt 6.x.x (MinGW 64-bit)" 命令行，切换到输出目录后执行：
+cd x64\Release
+windeployqt --release TianHong-Security-Defense.exe
+```
+
+`windeployqt` 会自动复制程序依赖的 Qt6*.dll（Core/Gui/Widgets/Network 等）、插件目录（platforms、styles、imageformats 等），以及对应的 VC 运行时（vcruntime140.dll、msvcp140.dll 等）。也可直接在 Qt Creator 中运行程序让其自动部署，或手动从 `Qt\6.9.2\mingw_64\bin` 复制。
 
 ### 运行说明
 
