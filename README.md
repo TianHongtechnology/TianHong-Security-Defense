@@ -227,9 +227,12 @@ TianHong-Security-Defense/
 │   ├── malware.sha256                # 恶意软件哈希库
 │   └── white.sha256                  # 安全文件哈希白名单
 │
-├── Release/                          # 外部依赖二进制（不在编译名单内且正常无法成套获得）
+├── Release/                          # 外部依赖二进制 + 规则/模型文件（不在编译名单内且正常无法成套获得）
 │   ├── ElaWidgetTools.dll            # Qt 扩展组件库
 │   ├── certmgr.exe                   # 证书管理工具
+│   ├── Malware.yarac / MalwareMemory.yarac  # YARA 编译规则（不包含 .yara 源文件）
+│   ├── Heur.data.*                   # LightGBM ML 模型权重
+│   ├── nSpy.exe                      # 启发式训练程序
 │   └── libclamav.dll 等              # ClamAV 运行时依赖 DLL
 │
 ├── LICENSE                           # MIT License
@@ -332,8 +335,8 @@ PROCESS_CHECK_RESP - 进程预检响应
 
 | 文件/目录 | 用途 | 可配置方式 |
 |-----------|------|-----------|
-| `Malware.yarac` / `MalwareMemory.yarac` | YARA 恶意软件签名库（编译版） | 从 `rules\Yara\` 复制，或替换为自定义 `.yarac` |
-| `Heur.data`（及配套文件） | LightGBM PE 行为分析模型 | 训练新模型后从 `rules\Model\` 复制替换 |
+| `Malware.yarac` / `MalwareMemory.yarac` | YARA 恶意软件签名库（编译版） | 从 `Release\` 复制，或替换为自定义 `.yarac` |
+| `Heur.data.base` / `Heur.data.extra`（及配套 .names/.config） | LightGBM PE 行为分析模型 | 使用 `nSpy.exe` 训练新模型后替换 |
 | `ClamAVDataBase\` | ClamAV 病毒库 | 通过 `freshclam` 更新，或直接替换整个目录 |
 | `malware.sha256` | 已知恶意软件哈希库 | 追加新条目 |
 | `white.sha256` | 已知安全软件/系统文件白名单 | 追加白名单条目 |
@@ -347,6 +350,10 @@ PROCESS_CHECK_RESP - 进程预检响应
 ```powershell
 xcopy /E /I /Y "Release\*" "x64\Release\"
 xcopy /E /I /Y "Release\certmgr.exe" "x64\Release\Resources\BinaryFiles\"
+xcopy /E /I /Y "Release\Malware.yarac" "x64\Release\Resources\DataBase\"
+xcopy /E /I /Y "Release\MalwareMemory.yarac" "x64\Release\Resources\DataBase\"
+xcopy /E /I /Y "Release\Heur.data.*" "x64\Release\Resources\DataBase\"
+xcopy /E /I /Y "Release\nSpy.exe" "x64\Release\Resources\DataBase\"
 ```
 
 | 文件 | 来源 | 说明 |
@@ -354,6 +361,9 @@ xcopy /E /I /Y "Release\certmgr.exe" "x64\Release\Resources\BinaryFiles\"
 | `ElaWidgetTools.dll` | [ElaWidgetTools](https://github.com/Ellise961/ElaWidgetTools) | Qt 扩展组件库 |
 | `certmgr.exe` | Windows SDK | 证书管理工具 |
 | `libclamav.dll` 及其依赖 | ClamAV / libcurl / OpenSSL 等 | ClamAV 扫描引擎运行时 |
+| `Malware.yarac` / `MalwareMemory.yarac` | 本项目编译 | YARA 编译规则（不包含 `.yara` 源文件） |
+| `Heur.data.base` / `Heur.data.extra` 等 | 本项目训练 | LightGBM 启发式 ML 模型权重 |
+| `nSpy.exe` | 本项目编译 | 启发式模型训练程序（用于训练 Heur.data） |
 
 > **⚠️ 免责声明**：`Release\` 下的所有 PE 文件（.dll、.exe）均来自第三方开源项目或系统组件，仅供本项目运行时依赖使用。作者不对这些文件的来源安全性、无毒状态做任何保证，使用者应自行评估风险，建议在虚拟机中运行。详见 [Release/README.md](Release/README.md)。
 
