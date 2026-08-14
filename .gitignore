@@ -3,8 +3,9 @@ x64/
 **/x64/
 **/build/
 **/Release/
-!Release/
-!Release/**
+# 仅根目录 Release/ 被跟踪（外部依赖二进制），子项目的 Release/ 为构建产物，保持忽略
+!/Release/
+!/Release/**
 **/Debug/
 **/*.lib
 **/*.exp
