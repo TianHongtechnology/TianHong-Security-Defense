@@ -5,7 +5,7 @@
 [![Qt](https://img.shields.io/badge/Qt-6.9.2-green)]()
 [![C++](https://img.shields.io/badge/C%2B%2B-C%2B%2B20-blue)]()
 
-一款基于内核驱动 + 用户态挂钩 + 启发式分析的 Windows 安全防护系统。
+一款基于内核驱动 + 用户态挂钩 + 启发式分析的 Windows 安全防护系统，集实时行为监控、主机入侵防御、进程注入防护、静态特征扫描于一体。
 
 > **⚠️ 免责声明 / Disclaimer**
 >
@@ -69,29 +69,45 @@
 | **R0** | 内核防护层 | 驱动级行为分析、HIPS 规则引擎、文件/注册表/网络过滤 |
 | **扫描层** | 静态检测层 | YARA 规则 + ClamAV 引擎 + LightGBM 机器学习模型 |
 
+### 通信机制
+
+主程序与各模块之间通过以下方式进行通信：
+
+| 通信方式 | 用途 | 端口/路径 |
+|----------|------|----------|
+| 本地回环 Socket | 主程序 ↔ 驱动客户端 | 12345 / 12346 / 12347 |
+| IOCTL | 主程序 ↔ R0 内核驱动 | `\Device\TianHong` |
+| 进程创建通知 | R0 ↔ R3 DLL | PsSetCreateProcessNotifyRoutine |
+| 内核设备路径 | 磁盘过滤驱动 | `\Device\Harddisk` |
+
 ---
 
 ## 核心功能
 
 ### 1. 内核行为分析引擎 (BehaviorAnalysis)
 
-- **实时采集**：通过定时器（500ms 间隔）收集所有活跃 PID 的行为数据
-- **指标体系**：内存操作、进程创建、网络连接、文件操作、注册表变更、COM 调用、ETW 事件等
-- **威胁评分**：基于加权指标评分，达到阈值后挂起进程并请求用户决策
+通过内核定时器（500ms 间隔）持续采集所有活跃进程的行为数据，基于多维度指标加权评分识别恶意行为。
+
+- **指标体系**：内存操作（RemoteWrite、Shellcode、ProcessHollowing 等）、进程创建、网络连接、文件操作、注册表变更、COM 调用、ETW 事件
+- **威胁评分**：动态阈值（50.0）触发后挂起进程并请求用户决策
 - **行为链检测**：识别进程空心化 (Process Hollowing)、远程线程注入、代码注入等高级攻击手法
-- **动态规则**：支持 TOML 格式的动态规则加载，无需重新编译驱动
+- **动态规则**：支持 TOML 格式动态规则加载，无需重新编译驱动
+- **PID 去重**：同一进程避免重复告警
+- **进程树管理**：检测到威胁时挂起根进程及其所有子孙进程
 
 ### 2. HIPS 主机入侵防御系统 (Host Intrusion Prevention System)
 
+基于规则的入侵防御系统，可拦截文件、注册表、网络和进程操作。
+
 - **规则引擎**：基于 TOML 配置文件定义规则，支持文件、注册表、网络、进程四类规则
-- **意图判断**：根据 DesiredAccess 和 CreateDisposition 判断真实操作意图（写/删/重命名）
+- **意图判断**：根据 DesiredAccess 和 CreateDisposition 判断真实操作意图（写/删/重命名），避免误触发
 - **用户决策**：匹配规则后弹出 MessageBox 等待用户 Allow/Block 决策（30秒超时）
 - **决策缓存**：同一进程+请求的决策缓存 5 分钟，避免重复弹窗
 - **热更新**：支持运行时添加/删除/清除规则
 
 ### 3. 注入防护 (Injection Protection)
 
-**三层防护架构：**
+三层渐进式注入检测与拦截：
 
 | 层级 | 技术 | 作用 |
 |------|------|------|
@@ -108,7 +124,7 @@
 
 ### 4. 脚本沙箱 (Script Sandbox)
 
-对 JS/VBS/HTA/PS1/BAT 等脚本进行**行为分析**，无需执行脚本：
+对 JS/VBS/HTA/PS1/BAT 等脚本进行**静态行为分析**，无需实际执行脚本：
 
 - **内容指纹检测**：RC4/Base64 加壳、JSON 数据加载器、西里尔字母替换密码
 - **行为链检测**：模拟解释脚本行为，识别下载器、凭证窃取、持久化等恶意行为
@@ -123,6 +139,10 @@
 | **YARA** | 恶意软件签名匹配 | Apache 2.0 / BSD-3 |
 | **ClamAV** | 商业病毒库扫描（动态加载 DLL） | GPL-2.0+ |
 | **LightGBM** | PE 文件机器学习分类 | MIT |
+
+- **YARA**：支持编译版 `.yarac` 和源码版 `.yara` 两种格式，可通过 `IS_LOAD_YARAC` 宏切换
+- **ClamAV**：通过 `LoadLibrary` 动态加载 `libclamav.dll`，通过 `freshclam` 更新病毒库
+- **LightGBM**：基于 PE 文件的十六进制特征进行恶意软件分类，支持热更新模型文件
 
 ### 6. MBR/磁盘保护 (Disk Filter Driver)
 
@@ -142,19 +162,27 @@
 
 ```
 TianHong-Security-Defense/
+│
 ├── TianHong-Security-Defense/        # 主 GUI 程序 (Qt 6)
 │   ├── main.cpp                      # 入口、线程管理、通信
-│   ├── PublicFunction.cpp             # 公共函数（进程路径、文件操作等）
-│   ├── Sandbox.cpp                    # 脚本沙盒行为分析
-│   ├── BatchScan.h                    # 批量扫描 + 家族分类器
-│   ├── PEScan.h                       # PE 扫描 + LightGBM 分类器
+│   ├── PublicFunction.cpp            # 公共函数（进程路径、文件操作等）
+│   ├── Sandbox.cpp                   # 脚本沙盒行为分析
+│   ├── BatchScan.h                   # 批量扫描 + 家族分类器
+│   ├── PEScan.h                      # PE 扫描 + LightGBM 分类器
 │   ├── VirusScanPage.cpp/.h          # 病毒扫描页面
+│   ├── VirusScanPage2.cpp/.h         # 病毒扫描页面 v2
+│   ├── PublicInclude.h               # 全局头文件包含
+│   ├── PublicDefine.h                # 全局宏定义
 │   ├── ElaWidgetTools/               # Qt 扩展组件库
+│   │   ├── ElaAppWindow/             # 主窗口组件
+│   │   ├── ElaNavListWidget/         # 导航列表
+│   │   ├── ElaToastNotification/     # 系统通知
+│   │   └── ...                       # 其他 Ela 组件
 │   ├── include/                      # 第三方头文件
 │   │   ├── libyara/                  # YARA 引擎头文件
 │   │   ├── libarchive/               # libarchive 头文件
 │   │   └── LightGBM/                 # LightGBM C API
-│   └── ClamAV/clamav-main/           # ClamAV 源码（本地自行获取，详见构建说明）
+│   └── ClamAV/clamav-main/           # ClamAV 源码（本地自行获取）
 │
 ├── TianHongDefense/                  # R3 API 挂钩 DLL
 │   ├── dllmain.cpp                   # DLL 入口、Detours 钩子
@@ -163,7 +191,7 @@ TianHong-Security-Defense/
 ├── TianHongInjector32/               # R3 进程注入工具
 │   └── main.cpp                      # 远程线程注入实现
 │
-├── TianHongScanner/                  # 独立 PE 扫描引擎
+├── TianHongScanner/                  # 独立 PE 扫描工具
 │   └── main.cpp                      # 命令行扫描工具
 │
 ├── TianHongDefenseKernelProtection/  # R0 内核驱动 (主驱动)
@@ -194,6 +222,25 @@ TianHong-Security-Defense/
 │       ├── Comm.cpp                  # 通信层
 │       └── DynamicRuleLoader.cpp     # 动态规则加载
 │
+├── rules/                            # 规则与模型文件（大文件已排除在 git 外）
+│   ├── Yara/                         # YARA 规则
+│   │   ├── Malware.yarac             # PE 扫描规则（~78MB）
+│   │   └── MalwareMemory.yarac       # 内存扫描规则
+│   ├── Model/                        # LightGBM 模型
+│   │   ├── Heur.data.base            # 模型基础数据
+│   │   ├── Heur.data.extra           # 模型扩展数据
+│   │   └── Heur.data.config          # 模型配置
+│   ├── malware.sha256                # 恶意软件哈希库
+│   └── white.sha256                  # 安全文件哈希白名单
+│
+├── ExternalBinaries/                 # 外部依赖 DLL（需手动复制到输出目录）
+│   ├── MSVC 运行时                    # vcruntime140.dll 等
+│   ├── Qt 核心库                      # Qt6Core.dll 等
+│   ├── Qt 插件                        # platforms/imageformats/tls 等
+│   ├── ElaWidgetTools.dll            # Qt 扩展组件库
+│   ├── 第三方依赖 DLL                 # libcurl, libarchive, libxml2 等
+│   └── Resources/                    # 配套资源文件
+│
 ├── LICENSE                           # MIT License
 ├── README.md                         # 本文件
 ├── THIRD-PARTY-LICENSES.md           # 第三方 License 汇总
@@ -206,8 +253,8 @@ TianHong-Security-Defense/
 
 ### 驱动模块
 
-| 模块 | 类型 | 技术 |
-|------|------|------|
+| 模块 | 类型 | 关键技术 |
+|------|------|---------|
 | 主驱动 | Filter Manager (filesys) | 非分页内存过滤、进程/线程/注册表回调 |
 | 磁盘驱动 | WDM 磁盘过滤 | 物理磁盘附加、MBR 扇区拦截 |
 | 网络驱动 | WFP Callout | 网络数据包过滤、DNS 拦截 |
@@ -215,20 +262,32 @@ TianHong-Security-Defense/
 
 ### 通信协议
 
-主程序与驱动客户端通过本地回环 Socket 通信，支持以下消息类型：
+主程序与各模块通过本地回环 Socket 通信，消息格式为 `COMMAND\0DATA\0`：
 
 ```
-COMMAND / RESULT / HEARTBEAT / QUIT / READY / LOG / ALERT
-ALERT_RESPONSE / PROCESS_CHECK / PROCESS_CHECK_RESP
+COMMAND     - 建立连接/初始化
+RESULT      - 操作结果确认
+HEARTBEAT   - 心跳保活（每 5s）
+QUIT        - 优雅退出
+READY       - 驱动初始化完成通知
+LOG         - 日志推送
+ALERT       - 威胁告警
+ALERT_RESPONSE - 用户对告警的决策（Allow/Block）
+PROCESS_CHECK   - 进程预检请求
+PROCESS_CHECK_RESP - 进程预检响应
 ```
 
 ### 内核安全设计
 
-- **堆分配大结构体**：内核栈空间有限（~12-24KB），大型数组使用 `ExAllocatePool2`
-- **RAII 颜色恢复**：控制台输出使用 `ColorGuard` 确保退出时恢复原始颜色
-- **SEH 异常保护**：关键回调函数用 `__try/__except` 包裹，防止蓝屏
-- **PID 去重**：行为分析按 PID 去重，防止同一进程重复告警
-- **进程树管理**：检测到威胁时挂起根进程及其所有子孙进程
+| 技术 | 说明 |
+|------|------|
+| **堆分配大结构体** | 内核栈空间有限（~12-24KB），大型数组使用 `ExAllocatePool2` |
+| **RAII 颜色恢复** | 控制台输出使用 `ColorGuard` 确保退出时恢复原始颜色 |
+| **SEH 异常保护** | 关键回调函数用 `__try/__except` 包裹，防止蓝屏 |
+| **PID 去重** | 行为分析按 PID 去重，防止同一进程重复告警 |
+| **进程树管理** | 检测到威胁时挂起根进程及其所有子孙进程 |
+| **用户决策缓存** | HIPS 规则命中决策缓存 5 分钟，减少重复弹窗 |
+| **响应缓存清理** | 进程退出时清理决策缓存，防止 PID 复用导致的错误决策继承 |
 
 ---
 
@@ -239,7 +298,7 @@ ALERT_RESPONSE / PROCESS_CHECK / PROCESS_CHECK_RESP
 | 项目 | 版本 |
 |------|------|
 | 操作系统 | Windows 10/11 (x64) |
-| 编译器 | MSVC v145 (Visual Studio 2022 Community) 或 mingw |
+| 编译器 | MSVC v145 (Visual Studio 2022 Community) |
 | Qt | 6.9.2 (mingw_64) |
 | Windows SDK | 10.0.28000.0+ |
 | ClamAV 源码 | 需自行获取（见下方说明） |
@@ -259,7 +318,7 @@ ALERT_RESPONSE / PROCESS_CHECK / PROCESS_CHECK_RESP
 
 > ⚠️ **重要：Win32 与 x64 构建需分开进行**
 >
-> `TianHongInjector32`（R3 进程注入工具）必须使用 **Win32 (x86)** 平台构建，其余驱动和主程序使用 **x64** 平台。**两者无法在同一平台下同时生成**。
+> `TianHongInjector32` 和 `TianHongDefense`（DLL）的 Win32 版本必须使用 **Win32 (x86)** 平台构建，其余驱动和主程序使用 **x64** 平台。
 
 1. 以管理员身份打开 Visual Studio
 2. 打开 `TianHong-Security-Defense.sln`
@@ -280,13 +339,15 @@ ALERT_RESPONSE / PROCESS_CHECK / PROCESS_CHECK_RESP
 
 程序运行依赖 `Resources\DataBase\` 目录下的规则文件和模型文件，可通过替换以下文件来自定义行为：
 
-| 文件 | 用途 | 可配置方式 |
-|------|------|-----------|
-| `Malware.yarac` / `MalwareMemory.yarac` | YARA 恶意软件签名库（编译版） | 替换为自定义 `.yarac` 文件，或改为 `.yara` 源码文件（需同时设置 `IS_LOAD_YARAC` 为 `FALSE`） |
-| `Heur.data`（及 `.base`、`.extra` 配套文件） | LightGBM PE 行为分析模型 | 训练新模型后替换整组文件 |
-| `ClamAVDataBase\` | ClamAV 病毒库（目录） | 通过 `freshclam` 更新，或直接替换整个目录 |
+| 文件/目录 | 用途 | 可配置方式 |
+|-----------|------|-----------|
+| `Malware.yarac` / `MalwareMemory.yarac` | YARA 恶意软件签名库（编译版） | 从 `rules\Yara\` 复制，或替换为自定义 `.yarac` |
+| `Heur.data`（及配套文件） | LightGBM PE 行为分析模型 | 训练新模型后从 `rules\Model\` 复制替换 |
+| `ClamAVDataBase\` | ClamAV 病毒库 | 通过 `freshclam` 更新，或直接替换整个目录 |
+| `malware.sha256` | 已知恶意软件哈希库 | 追加新条目 |
+| `white.sha256` | 已知安全软件/系统文件白名单 | 追加白名单条目 |
 
-> `Resources\BinaryFiles\` 目录下的其他文件（如 `TianHongDefense32/64.dll`、`TianHongInjector32.exe` 等）为程序运行时必需组件，请勿随意删除。
+> 详细规则文件说明见 [rules/README.md](rules/README.md)。
 
 ### 外部依赖 DLL
 
@@ -300,8 +361,8 @@ xcopy /E /I /Y "ExternalBinaries\*" "x64\Release\"
 
 ### 运行说明
 
-1. 确保测试签名已启用
-2. 以管理员权限运行主程序
+1. 确保测试签名已启用 (`bcdedit /set testsigning on` 并重启)
+2. 以管理员权限运行 `TianHong-Security-Defense.exe`
 3. 主程序会自动安装并启动各驱动服务
 4. 驱动停止顺序：网络 → 磁盘 → 主驱动 → R3 DLL 卸载
 
@@ -344,6 +405,14 @@ xcopy /E /I /Y "ExternalBinaries\*" "x64\Release\"
 | [OpenSSL](https://www.openssl.org/) | OpenSSL License | 加密库（通过 YARA NuGet） |
 | [Jansson](https://www.digip.org/jansson/) | MIT | JSON 解析（通过 YARA NuGet） |
 | [ElaWidgetTools](https://github.com/Ellise961/ElaWidgetTools) | TBD | Qt 组件扩展库 |
+| [PCRE2](https://www.pcre.org/) | BSD-3 | 正则表达式（通过 ClamAV） |
+| [libcurl](https://curl.se/) | MIT | HTTP/HTTPS 传输（通过 ClamAV） |
+| [libssh2](https://www.libssh2.org/) | BSD-3-Clause | SSH 传输 |
+| [nghttp2](https://nghttp2.org/) | MIT | HTTP/2 传输 |
+| [zlib](https://zlib.net/) | zlib License | 压缩库 |
+| [libbz2](https://sourceware.org/bzip2/) | BZIP2 License | bzip2 压缩 |
+| [pdcurses](https://pdcurses.org/) | Public Domain | 终端 UI |
+| [json-c](https://github.com/json-c/json-c) | MIT | JSON 解析 |
 
 完整 license 详情见 [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md)。
 
