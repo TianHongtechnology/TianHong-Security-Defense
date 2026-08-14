@@ -1,0 +1,83 @@
+# ===== Build Output =====
+x64/
+**/x64/
+**/build/
+**/Release/
+**/Debug/
+**/*.lib
+**/*.exp
+**/*.pdb
+**/*.obj
+**/*.ilk
+**/*.idb
+**/*.tlog
+**/*.lastbuildstate
+**/*.recipe
+**/*.log
+**/*.iobj
+**/*.ipdb
+**/*.pch
+**/*.lastbuildstate
+
+# ===== Qt =====
+**/qtvars.xml
+**/*.user
+**/DebugBuild.props
+
+# ===== VS =====
+.vs/
+**/.vs/
+.vscode/
+
+# ===== Sensitive Data =====
+**/*.spc
+**/root.spc
+**/whitecache.sha256
+**/whitedir.cache
+**/cache*
+**/malware.sha256
+**/Malware.yara
+**/MalwareMemory.yara
+**/Malware.yarac
+**/MalwareMemory.yarac
+**/yarac64.exe
+**/sha256数据库添加.ps1
+**/nSpy.exe
+
+# ===== Virus Samples (DO NOT COMMIT) =====
+Danger_To_Run/
+**/Danger_To_Run/
+test_sandbox.cpp
+test_sandbox.exe
+test_sandbox.obj
+
+# ===== Internal Dev =====
+能用的代码/
+backup/
+**/backup/
+inject way.txt
+重构方案.md
+.audit_vulnerabilities.md
+.audit_standards.md
+.audit_efficiency.md
+ClamAV/
+**/ClamAV/
+elastic-ref/
+**/elastic-ref/
+
+# ===== NuGet Packages =====
+packages/
+**/packages/
+
+# ===== Windows =====
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Runtime logs (only keep root-level docs)
+*.txt
+!README.md
+!LICENSE
+!THIRD-PARTY-LICENSES
+!.gitignore

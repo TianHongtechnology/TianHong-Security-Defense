@@ -1,0 +1,72 @@
+;
+; TianHongHips.inf - Minifilter 驱动安装文件
+; 基于 Microsoft nullFilter.inf 修改
+;
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = "ActivityMonitor"
+ClassGuid   = {b86dff51-a31e-4bac-b3cf-e8cfe75c9fc2}
+Provider    = %ProviderString%
+DriverVer   = 07/10/2026,1.0.0.0
+CatalogFile = TianHongHips.cat
+PnpLockdown = 1
+
+[SourceDisksFiles]
+TianHongDefenseKernelProtection.sys = 1,,
+
+[SourceDisksNames]
+1 = %DiskId1%,,,
+
+[DestinationDirs]
+TianHongHips.DriverFiles = 13            ; driver store
+
+; ==================== 默认安装 ====================
+
+[DefaultInstall.NT$ARCH$]
+OptionDesc  = %ServiceDescription%
+CopyFiles   = TianHongHips.DriverFiles
+
+[DefaultInstall.NT$ARCH$.Services]
+AddService  = %ServiceName%,,TianHongHips.Service
+
+; ==================== 服务配置 ====================
+
+[TianHongHips.Service]
+DisplayName      = %ServiceName%
+Description      = %ServiceDescription%
+ServiceBinary    = %13%\%DriverName%.sys
+Dependencies     = "FltMgr"
+ServiceType      = 2                        ; SERVICE_FILE_SYSTEM_DRIVER
+StartType        = 3                        ; SERVICE_DEMAND_START
+ErrorControl     = 1                        ; SERVICE_ERROR_NORMAL
+LoadOrderGroup   = "FSFilter Activity Monitor"
+AddReg           = TianHongHips.AddRegistry
+
+; ==================== 注册表配置 ====================
+
+[TianHongHips.AddRegistry]
+HKR,"Parameters","SupportedFeatures",0x00010001,0x3
+HKR,"Parameters\Instances","DefaultInstance",0x00000000,%DefaultInstance%
+HKR,"Parameters\Instances\"%Instance1.Name%,"Altitude",0x00000000,%Instance1.Altitude%
+HKR,"Parameters\Instances\"%Instance1.Name%,"Flags",0x00010001,%Instance1.Flags%
+
+; ==================== 文件列表 ====================
+
+[TianHongHips.DriverFiles]
+%DriverName%.sys
+
+; ==================== 字符串 ====================
+
+[Strings]
+ProviderString          = "TianHong Security"
+ServiceDescription      = "TianHongHips File System Minifilter"
+ServiceName             = "TianHongHips"
+DriverName              = "TianHongDefenseKernelProtection"
+DiskId1                 = "TianHongHips Installation Disk"
+
+; 实例配置
+DefaultInstance         = "TianHongHipsInstance"
+Instance1.Name          = "TianHongHipsInstance"
+Instance1.Altitude      = "370000"
+Instance1.Flags         = 0x0          ; 0x0 = 自动附加到卷（0x1 = 阻止自动附加）

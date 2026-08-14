@@ -1,0 +1,238 @@
+﻿#include "PEScan.h"
+
+
+// 预测样本
+bool NaiveBayesClassifier::Predict(const std::set<string>& features, double& confidence) {
+    double virusScore = log(virusPrior);
+    double normalScore = log(normalPrior);
+
+    // 对每个特征计算贡献
+    for (const auto& func : vocabulary) {
+        bool present = features.find(func) != features.end();
+        if (present) {
+            virusScore += log(virusProb[func]);
+            normalScore += log(normalProb[func]);
+        }
+        else {
+            virusScore += log(1.0 - virusProb[func]);
+            normalScore += log(1.0 - normalProb[func]);
+        }
+    }
+
+    // 计算置信度
+    double totalScore = virusScore + normalScore;
+    confidence = virusScore - normalScore;
+    return virusScore > normalScore;
+}
+
+// 加载模型
+BOOL NaiveBayesClassifier::LoadModel(const string& filename) {
+    ifstream in(filename);
+    if (!in) return FALSE;
+
+    // 一次性读取整个文件到内存（对于3MB文件很合适）
+    stringstream buffer;
+    buffer << in.rdbuf();
+    in.close();
+
+    // 从buffer读取
+    buffer >> virusPrior >> normalPrior >> virusCount >> normalCount;
+
+    size_t vocabSize;
+    buffer >> vocabSize;
+
+    // 预分配空间
+    vocabulary.clear();
+    virusProb.clear();
+    normalProb.clear();
+
+    // 一次性读取所有函数名
+    string line;
+    getline(buffer, line); // 消耗换行符
+
+    vector<string> funcNames;  // 临时存储，用于建立顺序索引
+    funcNames.reserve(vocabSize);
+
+    for (size_t i = 0; i < vocabSize; i++) {
+        getline(buffer, line);
+        vocabulary.insert(line);
+        funcNames.push_back(line);
+    }
+
+    // 批量读取概率数据
+    vector<double> vProbs(vocabSize), nProbs(vocabSize);
+    for (size_t i = 0; i < vocabSize; i++) {
+        buffer >> vProbs[i] >> nProbs[i];
+    }
+
+    // 批量插入map
+    for (size_t i = 0; i < vocabSize; i++) {
+        virusProb[funcNames[i]] = vProbs[i];
+        normalProb[funcNames[i]] = nProbs[i];
+    }
+
+    return TRUE;
+}
+
+// 通用thunk数据读取
+template<typename T> std::set<string> PEFileAnalyzer::parseImportsGeneric() {
+    std::set<string> imports;
+
+    IMAGE_DOS_HEADER* dosHeader = (IMAGE_DOS_HEADER*)baseAddress;
+    auto* ntHeaders = (IMAGE_NT_HEADERS*)((BYTE*)baseAddress + dosHeader->e_lfanew);
+
+    // 获取文件尾边界
+    BYTE* fileEnd = (BYTE*)baseAddress + fileSize;
+
+    DWORD importRVA = is64Bit ?
+        ((IMAGE_NT_HEADERS64*)ntHeaders)->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress :
+        ((IMAGE_NT_HEADERS32*)ntHeaders)->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+
+    if (!importRVA) return imports;
+
+    IMAGE_SECTION_HEADER* sectionHeader = IMAGE_FIRST_SECTION(ntHeaders);
+    for (WORD i = 0; i < ntHeaders->FileHeader.NumberOfSections; ++i) {
+        if (importRVA >= sectionHeader[i].VirtualAddress &&
+            importRVA < sectionHeader[i].VirtualAddress + sectionHeader[i].Misc.VirtualSize) {
+
+            auto* importDesc = (IMAGE_IMPORT_DESCRIPTOR*)(
+                (BYTE*)baseAddress +
+                (importRVA - sectionHeader[i].VirtualAddress + sectionHeader[i].PointerToRawData));
+
+            // 验证importDesc指针有效性
+            if ((BYTE*)importDesc + sizeof(IMAGE_IMPORT_DESCRIPTOR) > fileEnd) {
+                break;
+            }
+
+            while (importDesc->Name) {
+                // 验证Name指针有效性
+                DWORD nameOffset = importDesc->Name - sectionHeader[i].VirtualAddress + sectionHeader[i].PointerToRawData;
+                if (nameOffset >= fileSize) break;
+
+                const char* dllName = (const char*)baseAddress + nameOffset;
+                if ((BYTE*)dllName >= fileEnd) break;
+
+                T* thunk = nullptr;
+                if (importDesc->OriginalFirstThunk) {
+                    DWORD thunkOffset = importDesc->OriginalFirstThunk - sectionHeader[i].VirtualAddress + sectionHeader[i].PointerToRawData;
+                    if (thunkOffset >= fileSize) break;
+                    thunk = (T*)((BYTE*)baseAddress + thunkOffset);
+                }
+                else if (importDesc->FirstThunk) {
+                    DWORD thunkOffset = importDesc->FirstThunk - sectionHeader[i].VirtualAddress + sectionHeader[i].PointerToRawData;
+                    if (thunkOffset >= fileSize) break;
+                    thunk = (T*)((BYTE*)baseAddress + thunkOffset);
+                }
+
+                // 验证thunk指针有效性
+                if (!thunk || (BYTE*)thunk >= fileEnd) {
+                    importDesc++;
+                    continue;
+                }
+
+                while (thunk->u1.AddressOfData) {
+                    // 验证thunk指针是否超出范围
+                    if ((BYTE*)(thunk + 1) > fileEnd) break;
+
+                    if (!(thunk->u1.Ordinal & IMAGE_ORDINAL_FLAG)) {
+                        DWORD importNameOffset = thunk->u1.AddressOfData - sectionHeader[i].VirtualAddress + sectionHeader[i].PointerToRawData;
+
+                        // 三重验证：
+                        // 1. 偏移量是否有效
+                        // 2. 指针是否在文件范围内
+                        // 3. 名称是否以null结尾
+                        if (importNameOffset < fileSize) {
+                            auto* importByName = (IMAGE_IMPORT_BY_NAME*)((BYTE*)baseAddress + importNameOffset);
+
+                            // 检查指针范围和名称有效性
+                            if ((BYTE*)importByName < fileEnd &&
+                                (BYTE*)importByName + sizeof(WORD) < fileEnd) {
+
+                                // 获取函数名最大长度（剩余文件空间）
+                                size_t maxLen = fileEnd - (BYTE*)importByName - sizeof(WORD);
+                                string funcName;
+
+                                // 安全读取以null结尾的字符串
+                                for (size_t j = 0; j < maxLen; ++j) {
+                                    char c = importByName->Name[j];
+                                    if (c == '\0') break;
+                                    funcName += tolower(c);
+                                }
+
+                                if (!funcName.empty()) {
+                                    imports.insert(funcName);
+                                }
+                            }
+                        }
+                    }
+                    thunk++;
+                }
+                importDesc++;
+            }
+            break;
+        }
+    }
+    return imports;
+}
+
+PEFileAnalyzer::PEFileAnalyzer(const string& filePath) {
+    HANDLE hFile = CreateFileA(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ,
+        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return;
+
+    fileSize = GetFileSize(hFile, NULL);
+    if (fileSize == INVALID_FILE_SIZE) {
+        CloseHandle(hFile);
+        return;
+    }
+
+    HANDLE hMapping = CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
+    if (!hMapping) {
+        CloseHandle(hFile);
+        return;
+    }
+
+    baseAddress = MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0);
+    CloseHandle(hMapping);
+    CloseHandle(hFile);
+
+    if (!baseAddress) return;
+
+    // 验证PE文件
+    IMAGE_DOS_HEADER* dosHeader = (IMAGE_DOS_HEADER*)baseAddress;
+    if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE) return;
+
+    IMAGE_NT_HEADERS* ntHeaders = (IMAGE_NT_HEADERS*)((BYTE*)baseAddress + dosHeader->e_lfanew);
+    if (ntHeaders->Signature != IMAGE_NT_SIGNATURE) return;
+
+    // 根据PE类型选择解析方法
+    is64Bit = (ntHeaders->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC);
+
+    isValidPE = true;
+}
+
+PEFileAnalyzer::~PEFileAnalyzer() {
+    if (baseAddress) {
+        UnmapViewOfFile(baseAddress);
+    }
+}
+
+bool PEFileAnalyzer::isValid() const { return isValidPE; }
+
+std::set<string> PEFileAnalyzer::getImportedFunctions()
+{
+    std::set<string> imports;
+    if (!isValid()) return imports;
+
+    IMAGE_DOS_HEADER* dosHeader = (IMAGE_DOS_HEADER*)baseAddress;
+    auto* ntHeaders = (IMAGE_NT_HEADERS*)((BYTE*)baseAddress + dosHeader->e_lfanew);
+
+    if (is64Bit)
+    {
+        return parseImportsGeneric<IMAGE_THUNK_DATA64>();
+    }
+    else
+    {
+        return parseImportsGeneric<IMAGE_THUNK_DATA32>();
+    }
+}
