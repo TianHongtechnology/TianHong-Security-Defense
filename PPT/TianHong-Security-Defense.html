@@ -132,7 +132,7 @@ pre .k{color:var(--cyan)} pre .s{color:var(--amber)} pre .c2{color:#5b7290} pre 
   animation:float 4s ease-in-out infinite;
 }
 .hero-logo img{width:100%;height:100%;display:block;border-radius:26px}
-.hero-logo.sm{width:76px;height:76px;border-radius:18px;margin:0 auto 16px;animation:none;box-shadow:0 0 30px rgba(47,212,255,.28),0 0 0 6px rgba(47,212,255,.06)}
+.hero-logo.sm{width:76px;height:76px;min-height:76px;min-width:76px;border-radius:18px;margin:0 auto 16px;animation:none;box-shadow:0 0 30px rgba(47,212,255,.28),0 0 0 6px rgba(47,212,255,.06);flex-shrink:0;align-self:center}
 .hero-logo.sm img{border-radius:18px}
 @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
 .hero-title{font-size:64px;font-weight:900;letter-spacing:6px;text-align:center;

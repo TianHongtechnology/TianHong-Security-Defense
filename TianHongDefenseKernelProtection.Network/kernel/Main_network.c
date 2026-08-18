@@ -65,7 +65,17 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     status = WfpRegisterCallouts(DriverObject);
     if (!NT_SUCCESS(status)) {
         DbgPrint("[TianHongHips.Network] WfpRegisterCallouts failed: 0x%X\n", status);
-        /* 即使 WFP 注册失败也继续，设备仍可用于 IOCTL */
+        /* 注册失败时清理设备并返回失败，避免"假启用"（R3 将看到服务启动失败日志） */
+        {
+            UNICODE_STRING symlinkName;
+            RtlInitUnicodeString(&symlinkName, NETWORK_SYMLINK_NAME);
+            IoDeleteSymbolicLink(&symlinkName);
+        }
+        if (g_NetworkDeviceObject) {
+            IoDeleteDevice(g_NetworkDeviceObject);
+            g_NetworkDeviceObject = NULL;
+        }
+        return status;
     }
 
     DbgPrint("[TianHongHips.Network] DriverEntry completed\n");

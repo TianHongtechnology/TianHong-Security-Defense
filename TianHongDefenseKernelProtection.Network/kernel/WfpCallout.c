@@ -77,11 +77,54 @@ const char* g_defaultDohDomains[] = {
 };
 const ULONG g_defaultDohDomainCount = sizeof(g_defaultDohDomains) / sizeof(g_defaultDohDomains[0]);
 
+/* ── 已知 DoH 服务器 IP（ALE 层只能按 IP 匹配，域名条目必须配合 IP 条目使用） ── */
+const UCHAR g_defaultDohIpv4[][4] = {
+    { 223, 5, 5, 5 }, { 223, 6, 6, 6 },            /* 阿里 dns.alidns.com */
+    { 8, 8, 8, 8 }, { 8, 8, 4, 4 },                /* Google dns.google */
+    { 1, 1, 1, 1 }, { 1, 0, 0, 1 },                /* Cloudflare cloudflare-dns.com */
+    { 119, 29, 29, 29 },                           /* 腾讯 doh.pub */
+    { 94, 140, 14, 14 }, { 94, 140, 15, 15 },      /* AdGuard dns.adguard.com */
+    { 9, 9, 9, 9 }, { 149, 112, 112, 112 },        /* Quad9 dns.quad9.net */
+    { 208, 67, 222, 222 }, { 208, 67, 220, 220 },  /* OpenDNS doh.opendns.com */
+    { 194, 242, 2, 2 }, { 194, 242, 2, 3 },        /* Mullvad doh.mullvad.net */
+    { 45, 90, 28, 0 }, { 45, 90, 30, 0 },          /* NextDNS dns.nextdns.io */
+    { 76, 76, 2, 0 }, { 76, 76, 10, 0 }            /* ControlD dns.controld.com */
+};
+const ULONG g_defaultDohIpv4Count = sizeof(g_defaultDohIpv4) / sizeof(g_defaultDohIpv4[0]);
+
+const UCHAR g_defaultDohIpv6[][16] = {
+    { 0x20, 0x01, 0x48, 0x60, 0x48, 0x60, 0, 0, 0, 0, 0, 0, 0, 0, 0x88, 0x88 },  /* Google 2001:4860:4860::8888 */
+    { 0x20, 0x01, 0x48, 0x60, 0x48, 0x60, 0, 0, 0, 0, 0, 0, 0, 0, 0x88, 0x44 },  /* Google 2001:4860:4860::8844 */
+    { 0x26, 0x06, 0x47, 0x00, 0x47, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0x11, 0x11 },  /* Cloudflare 2606:4700:4700::1111 */
+    { 0x26, 0x06, 0x47, 0x00, 0x47, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0x10, 0x01 },  /* Cloudflare 2606:4700:4700::1001 */
+    { 0x26, 0x20, 0x00, 0xfe, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xfe },           /* Quad9 2620:fe::fe */
+    { 0x24, 0x00, 0x32, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 },             /* 阿里 2400:3200::1 */
+    { 0x24, 0x00, 0x32, 0x00, 0xba, 0xba, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 }        /* 阿里 2400:3200:baba::1 */
+};
+const ULONG g_defaultDohIpv6Count = sizeof(g_defaultDohIpv6) / sizeof(g_defaultDohIpv6[0]);
+
 /* ── 已知 C2 端口 ── */
 const USHORT g_c2Ports[C2_PORT_COUNT] = {
     4444, 8888, 1337, 9001, 1234, 4443,
     8443, 9999, 31337, 6667, 6668, 6669
 };
+
+/* ── C2 行为关联跟踪 ──
+ * 效仿 Elastic Beaconing 统计模型的思路：单次命中 C2 端口仅作指标（可能有误报），
+ * 同一进程在时间窗口内重复命中（周期性外联特征）才判定为 C2 通信并驱动级阻断。
+ * 阈值与窗口可按需调整。 */
+#define C2_TRACKER_MAX_ENTRIES   64
+#define C2_BLOCK_HIT_THRESHOLD   3      /* 窗口内命中次数达到该值才阻断 */
+#define C2_BLOCK_WINDOW_100NS    (60LL * 1000 * 10000)   /* 60 秒，KeQuerySystemTime 单位 100ns */
+
+typedef struct _C2_PID_TRACKER_ENTRY {
+    ULONG   Pid;
+    ULONG   HitCount;
+    LONGLONG LastHitTime;    /* KeQuerySystemTime 100ns 单位 */
+} C2_PID_TRACKER_ENTRY;
+
+static C2_PID_TRACKER_ENTRY g_C2Trackers[C2_TRACKER_MAX_ENTRIES];
+static KSPIN_LOCK g_C2TrackerLock;
 
 /* ── 内部函数声明 ── */
 /* FWPS_CALLOUT_CLASSIFY_FN2 签名要求返回 void 并包含 classifyContext 参数 */
@@ -111,6 +154,9 @@ static void NTAPI WfpStreamCalloutV4(
     IN const FWPS_FILTER2* filter,
     IN UINT64 flowContext,
     IN OUT FWPS_CLASSIFY_OUT0* classifyOut);
+
+/* 记录一次 C2 端口命中，返回是否达到行为阻断阈值（60s 窗口内 ≥3 次） */
+static BOOLEAN WfpShouldBlockC2(UINT32 pid);
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * 事件环形缓冲区
@@ -236,6 +282,58 @@ BOOLEAN WfpIsDohDomain(const char* domain)
         }
     }
     return FALSE;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * C2 行为关联跟踪
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static BOOLEAN WfpShouldBlockC2(UINT32 pid)
+{
+    KIRQL oldIrql;
+    LARGE_INTEGER now;
+    ULONG i, slot = 0xFFFFFFFF, oldestIdx = 0;
+    LONGLONG oldestTime = 0;
+    BOOLEAN block = FALSE;
+
+    KeQuerySystemTime(&now);
+
+    KeAcquireSpinLock(&g_C2TrackerLock, &oldIrql);
+
+    for (i = 0; i < C2_TRACKER_MAX_ENTRIES; i++) {
+        if (g_C2Trackers[i].HitCount > 0) {
+            if (g_C2Trackers[i].Pid == pid) {
+                /* 命中已有条目：窗口内累计或重置 */
+                if (now.QuadPart - g_C2Trackers[i].LastHitTime > C2_BLOCK_WINDOW_100NS) {
+                    g_C2Trackers[i].HitCount = 1;
+                } else {
+                    g_C2Trackers[i].HitCount++;
+                    if (g_C2Trackers[i].HitCount >= C2_BLOCK_HIT_THRESHOLD) {
+                        block = TRUE;
+                    }
+                }
+                g_C2Trackers[i].LastHitTime = now.QuadPart;
+                break;
+            }
+            /* 记录最旧条目（供无空槽时替换） */
+            if (oldestTime == 0 || g_C2Trackers[i].LastHitTime < oldestTime) {
+                oldestTime = g_C2Trackers[i].LastHitTime;
+                oldestIdx = i;
+            }
+        } else if (slot == 0xFFFFFFFF) {
+            slot = i;
+        }
+    }
+
+    if (i >= C2_TRACKER_MAX_ENTRIES) {
+        /* 新 PID：优先空槽，否则覆盖最旧条目 */
+        i = (slot != 0xFFFFFFFF) ? slot : oldestIdx;
+        g_C2Trackers[i].Pid = pid;
+        g_C2Trackers[i].HitCount = 1;
+        g_C2Trackers[i].LastHitTime = now.QuadPart;
+    }
+
+    KeReleaseSpinLock(&g_C2TrackerLock, oldIrql);
+    return block;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -405,7 +503,7 @@ static void NTAPI WfpAleConnectCalloutV4(
             }
         }
 
-        /* 发送事件 */
+        /* 发送事件：DoH 仅作指标（不断链，避免误伤 Firefox 等浏览器默认 DoH） */
         if (isDoh) {
             CHAR ctx[80];
             RtlStringCbPrintfA(ctx, sizeof(ctx), "DoH server %u.%u.%u.%u:%u",
@@ -419,6 +517,11 @@ static void NTAPI WfpAleConnectCalloutV4(
                 remoteIp[0], remoteIp[1], remoteIp[2], remoteIp[3], remotePort);
             WfpSendEvent((INT64)pid, NET_EVENT_C2_PORT, protocol,
                 localPort, remotePort, remoteIp, 0, TRUE, procName, ctx);
+            /* 行为关联阻断：同一进程 60s 窗口内重复命中 C2 端口才切断（效仿 Elastic beaconing 判定） */
+            if (WfpShouldBlockC2(pid)) {
+                classifyOut->actionType = FWP_ACTION_BLOCK;
+                return;
+            }
         }
         else if (protocol == 6 && remotePort != 80 && remotePort != 443 &&
                  remotePort > 1024 && remotePort != 0) {
@@ -436,7 +539,7 @@ static void NTAPI WfpAleConnectCalloutV4(
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * ALE Auth Connect V6 Callout — IPv6 版本（简化实现）
+ * ALE Auth Connect V6 Callout — 出站 IPv6 TCP/UDP 连接监控
  * ═══════════════════════════════════════════════════════════════════════════ */
 static void NTAPI WfpAleConnectCalloutV6(
     IN FWPS_INCOMING_VALUES0* inFixedValues,
@@ -447,12 +550,112 @@ static void NTAPI WfpAleConnectCalloutV6(
     IN UINT64 flowContext,
     IN OUT FWPS_CLASSIFY_OUT0* classifyOut)
 {
-    UNREFERENCED_PARAMETER(inFixedValues);
-    UNREFERENCED_PARAMETER(inMetaValues);
+    UINT32 pid = 0;
+    UINT8 protocol = 0;
+    UINT16 localPort = 0, remotePort = 0;
+    UCHAR remoteIp[16] = { 0 };
+    BOOLEAN isDoh = FALSE;
+    BOOLEAN isC2Port = FALSE;
+    CHAR procName[64] = { 0 };
+    UINT32 i;
+
     UNREFERENCED_PARAMETER(layerData);
     UNREFERENCED_PARAMETER(classifyContext);
     UNREFERENCED_PARAMETER(filter);
     UNREFERENCED_PARAMETER(flowContext);
+
+    if (!g_bNetworkProtectionEnabled) {
+        classifyOut->actionType = FWP_ACTION_PERMIT;
+        return;
+    }
+
+    __try {
+        if (inMetaValues->currentMetadataValues & FWPS_METADATA_FIELD_PROCESS_ID) {
+            pid = (UINT32)inMetaValues->processId;
+        }
+        if (pid == 0 || pid == 4) {
+            classifyOut->actionType = FWP_ACTION_PERMIT;
+            return;
+        }
+
+        if (inFixedValues->layerId == FWPS_LAYER_ALE_AUTH_CONNECT_V6) {
+            for (i = 0; i < inFixedValues->valueCount; i++) {
+                FWPS_INCOMING_VALUE0* val = &inFixedValues->incomingValue[i];
+                switch (val->value.type) {
+                    case FWP_UINT8:
+                        /* FWPS_FIELD_ALE_AUTH_CONNECT_V6_IP_PROTOCOL (index 5) */
+                        if (i == 5)
+                            protocol = val->value.uint8;
+                        break;
+                    case FWP_UINT16:
+                        /* FWPS_FIELD_ALE_AUTH_CONNECT_V6_IP_LOCAL_PORT (index 4) */
+                        if (i == 4) localPort = val->value.uint16;
+                        /* FWPS_FIELD_ALE_AUTH_CONNECT_V6_IP_REMOTE_PORT (index 7) */
+                        else if (i == 7) remotePort = val->value.uint16;
+                        break;
+                    case FWP_BYTE_ARRAY16_TYPE:
+                        /* FWPS_FIELD_ALE_AUTH_CONNECT_V6_IP_REMOTE_ADDRESS (index 6) */
+                        if (i == 6 && val->value.byteArray16 != NULL) {
+                            RtlCopyMemory(remoteIp, val->value.byteArray16->byteArray16, 16);
+                        }
+                        break;
+                }
+            }
+        }
+
+        if (inMetaValues->currentMetadataValues & FWPS_METADATA_FIELD_PROCESS_PATH) {
+            FWP_BYTE_BLOB* pathBlob = inMetaValues->processPath;
+            if (pathBlob && pathBlob->data && pathBlob->size > 0) {
+                ULONG copyChars = pathBlob->size / sizeof(WCHAR);
+                if (copyChars > 62) copyChars = 62;
+                for (i = 0; i < copyChars; i++) {
+                    procName[i] = (CHAR)((WCHAR*)pathBlob->data)[i];
+                }
+                procName[copyChars] = '\0';
+            }
+        }
+
+        /* 检测 DoH 连接：连接到已知 DoH 服务器的 443 端口 */
+        if (protocol == 6 && remotePort == 443) { /* TCP 443 */
+            isDoh = WfpIsDohServer(remoteIp, 1, 443);
+        }
+
+        /* 检测 C2 端口 */
+        for (i = 0; i < C2_PORT_COUNT; i++) {
+            if (remotePort == g_c2Ports[i]) {
+                isC2Port = TRUE;
+                break;
+            }
+        }
+
+        /* 发送事件：DoH 仅作指标（不断链，避免误伤浏览器默认 DoH） */
+        if (isDoh) {
+            CHAR ctx[80];
+            RtlStringCbPrintfA(ctx, sizeof(ctx), "DoH server IPv6 :%u", remotePort);
+            WfpSendEvent((INT64)pid, NET_EVENT_DOH_CONNECT, protocol,
+                localPort, remotePort, remoteIp, 1, TRUE, procName, ctx);
+        }
+        else if (isC2Port) {
+            CHAR ctx[80];
+            RtlStringCbPrintfA(ctx, sizeof(ctx), "C2 port IPv6 :%u", remotePort);
+            WfpSendEvent((INT64)pid, NET_EVENT_C2_PORT, protocol,
+                localPort, remotePort, remoteIp, 1, TRUE, procName, ctx);
+            /* 行为关联阻断：同一进程 60s 窗口内重复命中 C2 端口才切断（效仿 Elastic beaconing 判定） */
+            if (WfpShouldBlockC2(pid)) {
+                classifyOut->actionType = FWP_ACTION_BLOCK;
+                return;
+            }
+        }
+        else if (protocol == 6 && remotePort != 80 && remotePort != 443 &&
+                 remotePort > 1024 && remotePort != 0) {
+            /* 非 HTTP/HTTPS 的出站 TCP 连接 */
+            WfpSendEvent((INT64)pid, NET_EVENT_TCP_CONNECT, protocol,
+                localPort, remotePort, remoteIp, 1, TRUE, procName, NULL);
+        }
+
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        /* 异常时放行 */
+    }
 
     classifyOut->actionType = FWP_ACTION_PERMIT;
     return;
@@ -611,6 +814,7 @@ NTSTATUS WfpRegisterCallouts(PDRIVER_OBJECT DriverObject)
 
     KeInitializeSpinLock(&g_DohServerLock);
     KeInitializeSpinLock(&g_NetEventRing.Lock);
+    KeInitializeSpinLock(&g_C2TrackerLock);
     g_NetEventRing.Head = 0;
     g_NetEventRing.Tail = 0;
 
@@ -766,7 +970,8 @@ NTSTATUS WfpRegisterCallouts(PDRIVER_OBJECT DriverObject)
         return status;
     }
 
-    /* 添加默认 DoH 服务器域名（R3 可以后续通过 IOCTL 添加 IP） */
+    /* 添加默认 DoH 服务器（域名条目 + IP 条目；ALE 层仅能按 IP 匹配，
+     * 因此 IP 条目是 DoH 检测生效的关键，R3 可后续通过 IOCTL 增删） */
     {
         ULONG i;
         for (i = 0; i < g_defaultDohDomainCount; i++) {
@@ -778,6 +983,22 @@ NTSTATUS WfpRegisterCallouts(PDRIVER_OBJECT DriverObject)
                 while (g_defaultDohDomains[i][dlen] && dlen < 63) dlen++;
                 RtlCopyMemory(entry.Address, g_defaultDohDomains[i], dlen + 1);
             }
+            entry.Port = 443;
+            WfpAddDohServer(&entry);
+        }
+        for (i = 0; i < g_defaultDohIpv4Count; i++) {
+            DOH_SERVER_ENTRY entry;
+            RtlZeroMemory(&entry, sizeof(entry));
+            entry.AddressType = 0; /* IPv4 */
+            RtlCopyMemory(entry.Address, g_defaultDohIpv4[i], 4);
+            entry.Port = 443;
+            WfpAddDohServer(&entry);
+        }
+        for (i = 0; i < g_defaultDohIpv6Count; i++) {
+            DOH_SERVER_ENTRY entry;
+            RtlZeroMemory(&entry, sizeof(entry));
+            entry.AddressType = 1; /* IPv6 */
+            RtlCopyMemory(entry.Address, g_defaultDohIpv6[i], 16);
             entry.Port = 443;
             WfpAddDohServer(&entry);
         }
