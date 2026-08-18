@@ -42,11 +42,6 @@ VOID NTAPI LoadImageNotifyRoutine(
 // 解析进程挂起/恢复/终止 API
 VOID ResolveProcessManipulationApis(VOID);
 
-// ── Pending 注入 work item 跟踪 ──
-// 驱动初始化时调用 InjectPendingInit，卸载时调用 InjectPendingWaitAll
-VOID InjectPendingInit(VOID);
-VOID InjectPendingWaitAll(VOID);
-
 // 进程启动检查：挂起新进程并排队 work item 等待用户态决策
 VOID ProcessStartCheck(
     INT64 pid,
@@ -59,7 +54,8 @@ VOID QueueDllScanWorkItem(
     INT64 pid,
     const WCHAR* dllPath,
     const CHAR* processPath,
-    BOOLEAN blocking);
+    BOOLEAN blocking,
+    BOOLEAN isSideLoad);
 
 // ── 已初始化进程 PID 跟踪（区分初始线程创建 vs 远程线程注入）──
 // 当 ThreadCreateNotifyRoutine 检测到父→子线程创建时，通过此集合判断
@@ -101,10 +97,8 @@ typedef struct _NTDLL_TRACK_CONTEXT {
 
 VOID NtdllTrackInitialize(VOID);
 VOID NtdllTrackCleanup(VOID);
-// 进程退出时清理其 ntdll 追踪条目，避免 PID 复用导致误报重载
+// 进程退出时清理 ntdll 追踪条目，避免 PID 复用导致误报重载
 VOID NtdllTrackCleanupProcess(HANDLE ProcessId);
-// 进程退出时清理注入去重表，避免 PID 复用后新进程被误判为已注入
-VOID InjectCleanupPid(HANDLE pid);
 BOOLEAN NtdllTrackUpdate(
     HANDLE ProcessId,
     ULONG_PTR ImageBase,

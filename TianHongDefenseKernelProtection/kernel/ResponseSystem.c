@@ -280,6 +280,7 @@ NTSTATUS GetPendingRequest(_In_ PIRP Irp, _In_ PIO_STACK_LOCATION Stack)
     BEHAVIOR_DETECTED_RESPONSE behaviorAlert = {0};
     INJECTION_LOG_DATA injectionLog = {0};
     BA_ROLLBACK_LIST rollbackList = {0};
+    BA_ROLLBACK_LOG_RECORD rollbackLogRec = {0};
 
     outputLength = Stack->Parameters.DeviceIoControl.OutputBufferLength;
 
@@ -330,6 +331,10 @@ NTSTATUS GetPendingRequest(_In_ PIRP Irp, _In_ PIO_STACK_LOCATION Stack)
     {
         if (request->RollbackList != NULL)
             RtlCopyMemory(&rollbackList, request->RollbackList, sizeof(rollbackList));
+    }
+    else if (ruleType == RULE_TYPE_ROLLBACK_LOG)
+    {
+        RtlCopyMemory(&rollbackLogRec, &request->RollbackLogRec, sizeof(rollbackLogRec));
     }
     else
     {
@@ -394,6 +399,14 @@ NTSTATUS GetPendingRequest(_In_ PIRP Irp, _In_ PIO_STACK_LOCATION Stack)
         RtlCopyMemory(pList, &rollbackList, sizeof(BA_ROLLBACK_LIST));
         DriverDbgPrint("GetPendingRequest: Sending rollback list rootPid=%lld items=%d class=%s\n",
             rollbackList.rootPid, rollbackList.itemCount, rollbackList.threatClass);
+    }
+    else if (ruleType == RULE_TYPE_ROLLBACK_LOG)
+    {
+        // 回滚记录：复制 BA_ROLLBACK_LOG_RECORD 到 Data（溢出丢磁盘）
+        BA_ROLLBACK_LOG_RECORD* pRec = (BA_ROLLBACK_LOG_RECORD*)&detected->Data;
+        RtlCopyMemory(pRec, &rollbackLogRec, sizeof(BA_ROLLBACK_LOG_RECORD));
+        DriverDbgPrint("GetPendingRequest: Sending rollback log type=%d pid=%lld\n",
+            rollbackLogRec.type, rollbackLogRec.pid);
     }
     // 将 Unicode FullPath 转换为 ANSI，根据规则类型填充响应
     else if (fullPathLength > 0)
@@ -1346,6 +1359,54 @@ VOID SendInjectionLog(
     /* 填充日志消息 */
     RtlStringCbCopyA(request->InjectionLog.Message, sizeof(request->InjectionLog.Message),
         Message ? Message : "");
+
+    /* 插入队列，不等待 */
+    KeAcquireInStackQueuedSpinLock(&g_RequestQueueLock, &lockHandle);
+    if (!NT_SUCCESS(EnqueueRequest(request, &lockHandle)))
+    {
+        KeReleaseInStackQueuedSpinLock(&lockHandle);
+        ExFreePool(request);
+        return;
+    }
+    KeReleaseInStackQueuedSpinLock(&lockHandle);
+}
+
+// SendRollbackLogRecord - 发送一条回滚记录到用户态（Fire-and-Forget，不等待响应）
+// 驱动 g_baDroppedFiles / g_baRegOps 环形缓冲区溢出、覆盖有效记录时调用，
+// 将覆盖前的记录上报到主程序，持久化到磁盘缓存（300MB 上限），供回滚时参考。
+// 可能在 DISPATCH_LEVEL/APC_LEVEL（持有自旋锁）下被调用，必须位于非分页代码段。
+// ----------------------------------------------------------------------------
+#if defined(ALLOC_PRAGMA)
+#pragma alloc_text(NONPAGED, SendRollbackLogRecord)
+#endif
+VOID SendRollbackLogRecord(
+    _In_ const BA_ROLLBACK_LOG_RECORD* rec)
+{
+    PRESPONSE_REQUEST request;
+    KLOCK_QUEUE_HANDLE lockHandle;
+
+    if (rec == NULL)
+        return;
+
+    request = (PRESPONSE_REQUEST)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED, sizeof(RESPONSE_REQUEST), 'RESP');
+    if (request == NULL) {
+        return;
+    }
+
+    RtlZeroMemory(request, sizeof(RESPONSE_REQUEST));
+
+    /* 初始化事件（HandleUserResponse 需要设置此事件，即使没人等待） */
+    KeInitializeEvent(&request->CompletionEvent, SynchronizationEvent, FALSE);
+    request->RuleId = RULE_ID_BEHAVIOR_ANALYSIS;  /* 复用 RuleId */
+    request->RuleType = RULE_TYPE_ROLLBACK_LOG;
+    request->FireAndForget = TRUE;  /* 发送后不等待，由 HandleUserResponse 释放 */
+    request->FullPath = NULL;
+    request->ValueName = NULL;
+    request->NewValueData = NULL;
+
+    /* 填充回滚记录 */
+    RtlCopyMemory(&request->RollbackLogRec, rec, sizeof(BA_ROLLBACK_LOG_RECORD));
 
     /* 插入队列，不等待 */
     KeAcquireInStackQueuedSpinLock(&g_RequestQueueLock, &lockHandle);

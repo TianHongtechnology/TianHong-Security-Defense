@@ -372,6 +372,7 @@ struct WorkerTParam
 	bool sha256Enabled;
 	bool yaraEnabled;
 	bool clamavEnabled;
+	bool scriptEnabled;  // 脚本检测引擎开关
 
 	QMutex mutex;
 };
@@ -396,6 +397,7 @@ struct DirWorkerTParam
 	bool sha256Enabled;
 	bool yaraEnabled;
 	bool clamavEnabled;
+	bool scriptEnabled;  // 脚本检测引擎开关
 
 	bool stopRequested = false;
 };
@@ -423,6 +425,7 @@ struct ProcessWorkerTParam
 	bool sha256Enabled;
 	bool yaraEnabled;
 	bool clamavEnabled;
+	bool scriptEnabled;  // 脚本检测引擎开关
 
 	QMutex mutex;
 
@@ -916,6 +919,27 @@ static inline bool ScanWorkerShouldCancel()
 		   mScanState.load() == ssScanResult;
 }
 
+static bool IsScriptFile(const std::string& path)
+{
+	static const char* scriptExts[] = {
+		".ps1", ".psm1", ".psd1", ".ps1xml", ".psc1", ".cdxml",
+		".bat", ".cmd",
+		".vbs", ".vbe",
+		".js", ".jse", ".wsf",
+		".hta"
+	};
+	std::string low = path;
+	std::transform(low.begin(), low.end(), low.begin(),
+		[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+	for (const auto* ext : scriptExts) {
+		if (low.size() >= strlen(ext) &&
+			low.compare(low.size() - strlen(ext), strlen(ext), ext) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
 DWORD WorkerT(LPVOID lpParam)
 {
 	WorkerTParam* pParam = (WorkerTParam*)lpParam;
@@ -925,6 +949,7 @@ DWORD WorkerT(LPVOID lpParam)
 	const bool sha256En = pParam->sha256Enabled;
 	const bool yaraEn = pParam->yaraEnabled;
 	const bool clamavEn = pParam->clamavEnabled;
+	const bool scriptEn = pParam->scriptEnabled;
 	const bool onlyPEEnabled = onlyPE && !sha256En && !yaraEn && !clamavEn;
 
 	for (int fileIndex = 0; fileIndex < pParam->fileNames.count(); fileIndex++) {
@@ -949,7 +974,7 @@ DWORD WorkerT(LPVOID lpParam)
 					pParam->currentScanningFile = displayName;
 				}
 
-				if (onlyPEEnabled && !IsPeFileValid(fileToScan.c_str())) {
+				if (onlyPEEnabled && !IsPeFileValid(fileToScan.c_str()) && !IsScriptFile(fileToScan)) {
 				if (!mainFileCounted) {
 					QMutexLocker locker(&pParam->mutex);
 					pParam->HasScanedCount++;
@@ -1020,6 +1045,15 @@ DWORD WorkerT(LPVOID lpParam)
 				isVirus = IsntVirus;
 				virusName = Scan_GeneralScan(fileToScan, sha256);
 				if (virusName != "Empty") isVirus = ByCommonScaned;
+				if (isVirus == IsntVirus && scriptEn)
+				{
+					string scriptResult = Scan_ScriptBatch(fileToScan);
+					if (scriptResult != "Empty")
+					{
+						virusName = scriptResult;
+						isVirus = ByCommonScaned;
+					}
+				}
 			}
 
 			if (isVirus == IsntVirus) {
@@ -1195,7 +1229,7 @@ DWORD DirWorkerT(LPVOID lpParam)
 				pDirParam->currentScanningFile = QString::fromLocal8Bit(displayName.c_str());
 			}
 
-			if (onlyPEEnabled && !IsPeFileValid(fileToScan.c_str())) {
+			if (onlyPEEnabled && !IsPeFileValid(fileToScan.c_str()) && !IsScriptFile(fileToScan)) {
 				if (i == 0) {
 					QMutexLocker locker(&pDirParam->resultMutex);
 					pDirParam->HasScanedCount++;
@@ -1327,6 +1361,7 @@ DWORD ProcessWorkerT(LPVOID lpParam)
 	const bool sha256En = pWorkerParam->sha256Enabled;
 	const bool yaraEn = pWorkerParam->yaraEnabled;
 	const bool clamavEn = pWorkerParam->clamavEnabled;
+	const bool scriptEn = pWorkerParam->scriptEnabled;
 	const bool onlyPEEnabled = onlyPE && !sha256En && !yaraEn && !clamavEn;
 
 	std::unordered_map<QString, std::pair<bool, QString>> processedResults;
@@ -1391,7 +1426,7 @@ DWORD ProcessWorkerT(LPVOID lpParam)
 				pWorkerParam->currentScanningFile = QString::fromLocal8Bit(displayName.c_str());
 			}
 
-			if (onlyPEEnabled && !IsPeFileValid(fileToScan.c_str())) {
+			if (onlyPEEnabled && !IsPeFileValid(fileToScan.c_str()) && !IsScriptFile(fileToScan)) {
 				if (FilePos == 0) {
 					QMutexLocker locker(&pWorkerParam->mutex);
 					pWorkerParam->HasScanedCount++;
@@ -1452,6 +1487,15 @@ DWORD ProcessWorkerT(LPVOID lpParam)
 				isVirus = IsntVirus;
 				virusName = Scan_GeneralScan(fileToScan, thisSha256);
 				if (virusName != "Empty") isVirus = ByCommonScaned;
+				if (isVirus == IsntVirus && scriptEn)
+				{
+					string scriptResult = Scan_ScriptBatch(fileToScan);
+					if (scriptResult != "Empty")
+					{
+						virusName = scriptResult;
+						isVirus = ByCommonScaned;
+					}
+				}
 			}
 
 			// 更新缓存与计数
@@ -1876,6 +1920,7 @@ void VirusScanPage::createCustomWidget(QString desText)
 			spPEEngineSwitch->setVisible(false);
 			spSHA256EngineSwitch->setVisible(false);
 			spClamAVEngineSwitch->setVisible(false);
+			spScriptEngineSwitch->setVisible(false);
 			spHighSensitiveSwitch->setVisible(false);
 			spExtraPEEngineSwitch->setVisible(false);
 			pButtonDecrypt->setVisible(false);
@@ -1905,6 +1950,7 @@ void VirusScanPage::createCustomWidget(QString desText)
 			pParam->sha256Enabled = pVirusScanPage->pSHA256EngineSwitch->getIsToggled();
 			pParam->yaraEnabled = pVirusScanPage->pYaraEngineSwitch->getIsToggled();
 			pParam->clamavEnabled = pVirusScanPage->pClamAVEngineSwitch->getIsToggled();
+			pParam->scriptEnabled = pVirusScanPage->pScriptEngineSwitch->getIsToggled();
 
 			mTotalVirusFound = 0;
 			mVirusHandled = 0;
@@ -2086,6 +2132,7 @@ void VirusScanPage::createCustomWidget(QString desText)
 			spPEEngineSwitch->setVisible(false);
 			spSHA256EngineSwitch->setVisible(false);
 			spClamAVEngineSwitch->setVisible(false);
+			spScriptEngineSwitch->setVisible(false);
 			spHighSensitiveSwitch->setVisible(false);
 			spExtraPEEngineSwitch->setVisible(false);
 			pButtonDecrypt->setVisible(false);
@@ -2102,47 +2149,21 @@ void VirusScanPage::createCustomWidget(QString desText)
 			pButtonRight->setText("终止扫描");
 
 			// 标记进入准备阶段（收集文件列表期间），使终止扫描能立即响应
+			++m_scanGeneration;			// 本次新扫描：作废此前遗留的 watcher 回调
 			m_bScanPreparing = true;
 			showScanLoading("正在准备文件夹扫描...");
 
 			QFutureWatcher<QStringList>* fileListWatcher = new QFutureWatcher<QStringList>(this);
+			const quint64 gen = m_scanGeneration;
 			connect(fileListWatcher, &QFutureWatcher<QStringList>::finished, this, [=]() {
-				QStringList allFiles = fileListWatcher->result();
 				fileListWatcher->deleteLater();
+
+				// 准备期间用户点击了"终止扫描"或期间又发起了新扫描：
+				// 旧 watcher 结果作废，当前 UI 状态由终止处理/新扫描接管，直接忽略。
+				if (gen != m_scanGeneration) return;
+
+				QStringList allFiles = fileListWatcher->result();
 				hideScanLoading();
-
-				// 准备期间用户点击了"终止扫描"：取消本次扫描并恢复初始状态
-				if (g_scanCancelRequested.load()) {
-					g_scanCancelRequested = false;
-					m_bScanPreparing = false;
-
-					pVirusTableModel->removeRows(0, pVirusTableModel->rowCount());
-					pScanProgressBar->reset();
-					slideProgressInOut(pScanProgressBar, false);
-					pVirusTable->setVisible(false);
-					pButtonLeft->setVisible(false);
-					pButtonRight->setVisible(false);
-					EngineMainTitle->setVisible(false);
-					pProgressDesc->setText("准备就绪\n");
-
-					QTimer::singleShot(500, this, [=]() {
-						if (this) {
-							pScanProgressBar->reset();
-							documentationButton->setEnabled(true);
-							spYaraEngineSwitch->setVisible(true);
-							spPEEngineSwitch->setVisible(true);
-							spSHA256EngineSwitch->setVisible(true);
-							spClamAVEngineSwitch->setVisible(true);
-							spHighSensitiveSwitch->setVisible(true);
-							spExtraPEEngineSwitch->setVisible(true);
-							pButtonDecrypt->setVisible(true);
-
-							EngineMainTitle->setVisible(true);
-							EngineMainTitle->setText("引擎设置");
-						}
-						});
-					return;
-				}
 
 				if (allFiles.isEmpty()) {
 					NewMessageBox("选择的文件夹中没有找到文件。", 4, 3);
@@ -2162,6 +2183,7 @@ void VirusScanPage::createCustomWidget(QString desText)
 						spPEEngineSwitch->setVisible(true);
 						spSHA256EngineSwitch->setVisible(true);
 						spClamAVEngineSwitch->setVisible(true);
+						spScriptEngineSwitch->setVisible(true);
 						spHighSensitiveSwitch->setVisible(true);
 						spExtraPEEngineSwitch->setVisible(true);
 						pButtonDecrypt->setVisible(true);
@@ -2188,6 +2210,7 @@ void VirusScanPage::createCustomWidget(QString desText)
 				pDirParam->sha256Enabled = pVirusScanPage->pSHA256EngineSwitch->getIsToggled();
 				pDirParam->yaraEnabled = pVirusScanPage->pYaraEngineSwitch->getIsToggled();
 				pDirParam->clamavEnabled = pVirusScanPage->pClamAVEngineSwitch->getIsToggled();
+				pDirParam->scriptEnabled = pVirusScanPage->pScriptEngineSwitch->getIsToggled();
 
 				mTotalVirusFound = 0;
 				mVirusHandled = 0;
@@ -2231,6 +2254,7 @@ void VirusScanPage::createCustomWidget(QString desText)
 								spPEEngineSwitch->setVisible(true);
 								spSHA256EngineSwitch->setVisible(true);
 								spClamAVEngineSwitch->setVisible(true);
+								spScriptEngineSwitch->setVisible(true);
 								spHighSensitiveSwitch->setVisible(true);
 								spExtraPEEngineSwitch->setVisible(true);
 								pButtonDecrypt->setVisible(true);
@@ -2377,6 +2401,7 @@ void VirusScanPage::createCustomWidget(QString desText)
 		spPEEngineSwitch->setVisible(false);
 		spSHA256EngineSwitch->setVisible(false);
 		spClamAVEngineSwitch->setVisible(false);
+		spScriptEngineSwitch->setVisible(false);
 		spHighSensitiveSwitch->setVisible(false);
 		spExtraPEEngineSwitch->setVisible(false);
 		pButtonDecrypt->setVisible(false);
@@ -2404,25 +2429,30 @@ void VirusScanPage::createCustomWidget(QString desText)
 		pButtonRight->setText("终止扫描");
 
 		// ===== 唯一一次遮罩：在此期间并行预收集所有阶段的文件列表 =====
+		++m_scanGeneration;			// 本次新扫描：作废此前遗留的 watcher 回调
 		m_bScanPreparing = true;
 		showScanLoading("正在准备扫描...");
+		const quint64 gen = m_scanGeneration;
 
 		// 启动 3 个非进程阶段的文件收集（与进程文件收集并行）
 		{
 			auto* wStartup = new QFutureWatcher<QStringList>(this);
 			auto* wSchedTask = new QFutureWatcher<QStringList>(this);
 			auto* wUserDir = new QFutureWatcher<QStringList>(this);
-			connect(wStartup, &QFutureWatcher<QStringList>::finished, this, [this, wStartup]() {
-				m_quickScanStartupFiles = wStartup->result();
+			connect(wStartup, &QFutureWatcher<QStringList>::finished, this, [this, wStartup, gen]() {
 				wStartup->deleteLater();
+				if (gen != m_scanGeneration) return;   // 旧收集结果作废
+				m_quickScanStartupFiles = wStartup->result();
 				});
-			connect(wSchedTask, &QFutureWatcher<QStringList>::finished, this, [this, wSchedTask]() {
-				m_quickScanScheduledTaskFiles = wSchedTask->result();
+			connect(wSchedTask, &QFutureWatcher<QStringList>::finished, this, [this, wSchedTask, gen]() {
 				wSchedTask->deleteLater();
+				if (gen != m_scanGeneration) return;   // 旧收集结果作废
+				m_quickScanScheduledTaskFiles = wSchedTask->result();
 				});
-			connect(wUserDir, &QFutureWatcher<QStringList>::finished, this, [this, wUserDir]() {
-				m_quickScanUserDirFiles = wUserDir->result();
+			connect(wUserDir, &QFutureWatcher<QStringList>::finished, this, [this, wUserDir, gen]() {
 				wUserDir->deleteLater();
+				if (gen != m_scanGeneration) return;   // 旧收集结果作废
+				m_quickScanUserDirFiles = wUserDir->result();
 				});
 			wStartup->setFuture(QtConcurrent::run([]() { return CollectStartupItemFiles(); }));
 			wSchedTask->setFuture(QtConcurrent::run([]() { return CollectScheduledTaskPaths(); }));
@@ -2434,6 +2464,13 @@ void VirusScanPage::createCustomWidget(QString desText)
 		connect(fileListWatcher,
 			&QFutureWatcher<std::vector<std::pair<QString, quint32>>>::finished,
 			this, [=]() {
+				// 准备期间用户点击了"终止扫描"或期间又发起了新扫描：
+				// 旧 watcher 结果作废，当前 UI 状态由终止处理/新扫描接管，直接忽略。
+				if (gen != m_scanGeneration) {
+					fileListWatcher->deleteLater();
+					return;
+				}
+
 				vector<std::pair<QString, quint32>> allFilesWithPid = fileListWatcher->result();
 				QStringList allFiles;
 				vector<quint32> allPids;
@@ -2441,47 +2478,6 @@ void VirusScanPage::createCustomWidget(QString desText)
 				for (const auto& item : allFilesWithPid) {
 					allFiles.append(item.first);
 					allPids.push_back(item.second);
-				}
-
-				// 准备期间用户点击了"终止扫描"：取消本次扫描并恢复初始状态
-				if (g_scanCancelRequested.load()) {
-					g_scanCancelRequested = false;
-					m_bScanPreparing = false;
-					fileListWatcher->deleteLater();
-
-					if (m_bQuickScanMode) {
-						m_bQuickScanMode = false;
-						if (m_quickScanPhaseBar) m_quickScanPhaseBar->hide();
-					}
-
-					hideScanLoading();
-					pVirusTableModel->removeRows(0, pVirusTableModel->rowCount());
-					pScanProgressBar->reset();
-					slideProgressInOut(pScanProgressBar, false);
-					pVirusTable->setVisible(false);
-					pButtonLeft->setVisible(false);
-					pButtonRight->setVisible(false);
-					EngineMainTitle->setVisible(false);
-					pProgressDesc->setText("准备就绪\n");
-					if (mDrawer1) mDrawer1->setVisible(false);
-
-					QTimer::singleShot(500, this, [=]() {
-						if (this) {
-							pScanProgressBar->reset();
-							documentationButton->setEnabled(true);
-							spYaraEngineSwitch->setVisible(true);
-							spPEEngineSwitch->setVisible(true);
-							spSHA256EngineSwitch->setVisible(true);
-							spClamAVEngineSwitch->setVisible(true);
-							spHighSensitiveSwitch->setVisible(true);
-							spExtraPEEngineSwitch->setVisible(true);
-							pButtonDecrypt->setVisible(true);
-
-							EngineMainTitle->setVisible(true);
-							EngineMainTitle->setText("引擎设置");
-						}
-						});
-					return;
 				}
 
 				// 重新构建完整的 fileToPidsMap
@@ -2535,6 +2531,7 @@ void VirusScanPage::createCustomWidget(QString desText)
 							spPEEngineSwitch->setVisible(true);
 							spSHA256EngineSwitch->setVisible(true);
 							spClamAVEngineSwitch->setVisible(true);
+							spScriptEngineSwitch->setVisible(true);
 							spHighSensitiveSwitch->setVisible(true);
 							spExtraPEEngineSwitch->setVisible(true);
 							pButtonDecrypt->setVisible(true);
@@ -2576,6 +2573,7 @@ void VirusScanPage::createCustomWidget(QString desText)
 				pParam->sha256Enabled = pVirusScanPage->pSHA256EngineSwitch->getIsToggled();
 				pParam->yaraEnabled = pVirusScanPage->pYaraEngineSwitch->getIsToggled();
 				pParam->clamavEnabled = pVirusScanPage->pClamAVEngineSwitch->getIsToggled();
+				pParam->scriptEnabled = pVirusScanPage->pScriptEngineSwitch->getIsToggled();
 
 				// 快速扫描时若 Yara 引擎已启用，提示用户是否临时关闭
 				if (pParam->yaraEnabled && AskDisableYaraForQuickScan(this)) {
@@ -2635,6 +2633,7 @@ void VirusScanPage::createCustomWidget(QString desText)
 								spPEEngineSwitch->setVisible(true);
 								spSHA256EngineSwitch->setVisible(true);
 								spClamAVEngineSwitch->setVisible(true);
+								spScriptEngineSwitch->setVisible(true);
 								spHighSensitiveSwitch->setVisible(true);
 								spExtraPEEngineSwitch->setVisible(true);
 								pButtonDecrypt->setVisible(true);
@@ -2921,6 +2920,7 @@ void VirusScanPage::createCustomWidget(QString desText)
 	connect(pButtonRight, &ElaPushButton::clicked, this, [this]() {
 		if (mScanState == ssPrepared && m_bScanPreparing) {
 			// 准备阶段（收集文件列表期间）点击终止：立即取消准备，恢复初始状态
+			++m_scanGeneration;			// 作废 pending watcher 回调，防止干扰下次扫描
 			g_scanCancelRequested = true;
 			m_bScanPreparing = false;
 
@@ -2948,6 +2948,7 @@ void VirusScanPage::createCustomWidget(QString desText)
 					spPEEngineSwitch->setVisible(true);
 					spSHA256EngineSwitch->setVisible(true);
 					spClamAVEngineSwitch->setVisible(true);
+					spScriptEngineSwitch->setVisible(true);
 					spHighSensitiveSwitch->setVisible(true);
 					spExtraPEEngineSwitch->setVisible(true);
 					pButtonDecrypt->setVisible(true);
@@ -3761,8 +3762,9 @@ VirusScanPage::VirusScanPage(QWidget* parent)
 	CreateEngineOptionsWithRing(pPEEngineSwitch, "综合查杀 引擎", spPEEngineSwitch, ElaIconType::FileImport, pPEEngineRing);
 	CreateEngineOptions(pSHA256EngineSwitch, "SHA256 特征码 引擎", spSHA256EngineSwitch, ElaIconType::Fingerprint);
 	CreateEngineOptionsWithRing(pClamAVEngineSwitch, "ClamAV 引擎", spClamAVEngineSwitch, ElaIconType::C, pClamAVEngineRing);
+	CreateEngineOptions(pScriptEngineSwitch, "脚本检测引擎", spScriptEngineSwitch, ElaIconType::Code);  // 新增脚本引擎开关，默认开启
 	CreateEngineOptions(pHighSensitiveSwitch, "高敏感度模式（拦截所有无签名可执行程序）", spHighSensitiveSwitch, ElaIconType::ChartRadar);
-	CreateEngineOptions(pExtraPEEngineSwitch, "Extra 引擎（仅在启用综合引擎时有效）", spExtraPEEngineSwitch, ElaIconType::E);
+	CreateEngineOptions(pExtraPEEngineSwitch, "Extra 引擎（仅在启用机器学习引擎时有效）", spExtraPEEngineSwitch, ElaIconType::E);
 
 	pYaraEngineSwitch->setIsToggled(false);
 	pYaraEngineSwitch->setEnabled(false);
@@ -3771,6 +3773,7 @@ VirusScanPage::VirusScanPage(QWidget* parent)
 	pClamAVEngineSwitch->setIsToggled(false);
 	pClamAVEngineSwitch->setEnabled(true); // ClamAV改为手动加载，开关初始可用
 	pClamAVEngineRing->setVisible(false);  // 初始隐藏loading ring，点击后才显示
+	pScriptEngineSwitch->setIsToggled(true);  // 脚本引擎默认开启
 	pHighSensitiveSwitch->setIsToggled(false);
 	pExtraPEEngineSwitch->setEnabled(false);
 	pExtraPEEngineSwitch->setIsToggled(false);
@@ -3923,6 +3926,8 @@ VirusScanPage::VirusScanPage(QWidget* parent)
 	scanPageLayout->addSpacing(2);
 	scanPageLayout->addWidget(spClamAVEngineSwitch);
 	scanPageLayout->addSpacing(2);
+	scanPageLayout->addWidget(spScriptEngineSwitch);
+	scanPageLayout->addSpacing(2);
 	scanPageLayout->addWidget(spExtraPEEngineSwitch);
 	scanPageLayout->addSpacing(2);
 	scanPageLayout->addWidget(spHighSensitiveSwitch);
@@ -4030,6 +4035,7 @@ VirusScanPage::VirusScanPage(QWidget* parent)
 		spPEEngineSwitch->setVisible(true);
 		spSHA256EngineSwitch->setVisible(true);
 		spClamAVEngineSwitch->setVisible(true);
+		spScriptEngineSwitch->setVisible(true);
 		spHighSensitiveSwitch->setVisible(true);
 		spExtraPEEngineSwitch->setVisible(true);
 		pVirusTable->setVisible(false);
@@ -4340,6 +4346,7 @@ void VirusScanPage::startQuickScanPhase(int phase)
 	pParam->sha256Enabled = pSHA256EngineSwitch->getIsToggled();
 	pParam->yaraEnabled = pYaraEngineSwitch->getIsToggled();
 	pParam->clamavEnabled = pClamAVEngineSwitch->getIsToggled();
+	pParam->scriptEnabled = pScriptEngineSwitch->getIsToggled();
 
 	int totalForPhase = filesToScan.size();
 	mTotalScannedFiles += totalForPhase;

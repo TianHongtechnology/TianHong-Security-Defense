@@ -590,9 +590,6 @@ static VOID DiskFilterAttachVolumes(PDRIVER_OBJECT DriverObject)
         RtlInitUnicodeString(&deviceName, nameBuf);
         DiskFilterAttachToDevice(DriverObject, &deviceName, FALSE, 0);
     }
-
-    DiskDbgPrint("Attach summary: disks=%ld volumes=%ld (disks=0 means MBR protection INACTIVE!)\n",
-        g_lAttachedDiskCount, g_lAttachedVolumeCount);
 }
 
 // ============================================================================
@@ -636,9 +633,6 @@ NTSTATUS FileFilterInitialize(PDRIVER_OBJECT DriverObject)
      * 避免在 DriverEntry 中附加设备导致的死锁 */
     IoRegisterDriverReinitialization(DriverObject, DiskFilterReinit, NULL);
 
-    DiskDbgPrint("Disk filter initialized (MBR protection, sectors 0-%d)\n",
-        MBR_PROTECTION_SECTOR_COUNT - 1);
-
     return STATUS_SUCCESS;
 }
 
@@ -679,7 +673,24 @@ VOID FileFilterUnloadWrapper(VOID)
 VOID DiskFilterUnload(PDRIVER_OBJECT DriverObject)
 {
     UNREFERENCED_PARAMETER(DriverObject);
+
+    /* 先分离所有过滤设备并清空队列 */
     FileFilterUnloadWrapper();
+
+    /* 删除控制设备与符号链接。若漏删，\Device\TianHongDiskFilter 与
+     * \??\TianHongDiskFilter 会残留，导致驱动卸载后无法再次加载：
+     * IoCreateDevice / IoCreateSymbolicLink 返回 STATUS_OBJECT_NAME_COLLISION，
+     * 服务启动失败（StartService 返回 ERROR_DRIVER_BLOCKED 0x1B1）。 */
+    {
+        UNICODE_STRING symLink;
+        RtlInitUnicodeString(&symLink, DISK_SYMLINK_NAME);
+        IoDeleteSymbolicLink(&symLink);
+
+        if (g_DiskFilterDeviceObject != NULL) {
+            IoDeleteDevice(g_DiskFilterDeviceObject);
+            g_DiskFilterDeviceObject = NULL;
+        }
+    }
 }
 
 // ============================================================================

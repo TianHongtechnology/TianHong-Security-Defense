@@ -1,0 +1,1044 @@
+# ============================================================
+# Heuristics Rules — 静态内容指纹规则（启发式检测）
+# ============================================================
+# 生产级规则库说明：
+#   * 匹配语义：所有 patterns 必须同时命中（AND）；
+#     单个 pattern 内用 "|" 分隔多个备选（任一命中即算命中）。
+#   * exclude_patterns：命中任一即跳过整条规则（降低误报）。
+#   * min_size / max_size：文件大小范围（字节），超出范围不匹配。
+#   * language_hint：仅供标注，实际不参与匹配（内容指纹对语言无关）。
+#   * 严重度 severity：1-100，越高越危险。
+#
+# 编写原则：
+#   - 每条规则为“精确组合”，单个特征词不足以定论，组合后才构成强信号；
+#   - 优先覆盖下载执行、持久化、凭据窃取、反病毒绕过、勒索、挖矿等高危行为。
+#
+# 解析器约定（重要）：
+#   * 本文件由项目内置的简易 TOML 解析器读取（仅去除引号、不做转义处理），
+#     因此字符串中的反斜杠请写成单个 "\"（如 "hklm\sam"），不要写成 "\\"，
+#     否则无法匹配脚本内容中真实的单反斜杠路径。
+#   * patterns 数组可单行或跨行；每个元素内用 "|" 分隔多个备选，任一命中即命中。
+# ============================================================
+
+# ============================================================
+# A. PowerShell
+# ============================================================
+
+[[rule]]
+family = "BSD/TrojanDownloader.PS.EncodedDownloadCradle"
+severity = 92
+description = "Encoded PowerShell download-and-execute cradle"
+patterns = ["-enc|encodedcommand", "iex|invoke-expression", "downloadstring|downloadfile|webclient"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/TrojanDropper.PS.IEXBase64Gzip"
+severity = 90
+description = "PowerShell IEX + Base64 + GZip decompression payload"
+patterns = ["iex|invoke-expression", "decompress", "frombase64string"]
+exclude_patterns = []
+min_size = 0
+max_size = 10485760
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/TrojanDropper.PS.Base64DecodeRun"
+severity = 86
+description = "PowerShell decodes Base64 string then executes via IEX"
+patterns = ["frombase64string", "utf8.getstring", "iex|invoke-expression"]
+exclude_patterns = []
+min_size = 0
+max_size = 10485760
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/TrojanDropper.PS.ShellcodeInjection"
+severity = 95
+description = "PowerShell shellcode injection via VirtualAlloc + copy + thread creation"
+patterns = ["virtualalloc", "rtlmovememory|runtimememorycopy|copymemory", "createthread|createremotethread|queueuserapc"]
+exclude_patterns = []
+min_size = 0
+max_size = 10485760
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/TrojanSpy.PS.CredentialDump"
+severity = 92
+description = "PowerShell credential dumping (Mimikatz / LSASS techniques)"
+# 仅匹配 Mimikatz 强信号；不再单匹配 "lsass"（系统诊断脚本常以 lsass.exe 命名 ETW 追踪注册表键）。
+# LSASS 内存转储（procdump/minidump/comsvcs）由 LsassMiniDump 规则单独覆盖。
+patterns = ["sekurlsa|logonpasswords|kerberos::|invoke-mimikatz|mimikatz"]
+exclude_patterns = []
+min_size = 0
+max_size = 10485760
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/Trojan.PS.DisableDefender"
+severity = 86
+description = "PowerShell disables Windows Defender realtime protection"
+patterns = ["set-mppreference", "disablerealtimemonitoring|disableantispyware|disableioavprotection|disableantivirus"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/Evasion.PS.AMSIBypass"
+severity = 88
+description = "PowerShell AMSI bypass attempt"
+patterns = ["amsiinitfailed|amsipatch|bypassamsi|amsiutils|amsi.dll", "add-type"]
+exclude_patterns = []
+min_size = 0
+max_size = 10485760
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/Evasion.PS.UACBypass"
+severity = 90
+description = "PowerShell UAC bypass via ms-settings / fodhelper registry hijack"
+patterns = ["fodhelper|eventvwr|computerdefaults|sdclt", "ms-settings|shell\open\command"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/Trojan.PS.ScheduledTaskPersistence"
+severity = 84
+description = "PowerShell registers scheduled task with encoded payload"
+patterns = ["register-scheduledtask|new-scheduledtask|schtasks", "powershell", "-enc|encodedcommand"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/TrojanDownloader.PS.BypassCradle"
+severity = 88
+description = "PowerShell bypass + IEX download cradle"
+patterns = ["iex|invoke-expression", "downloadstring", "bypass|-executionpolicy bypass"]
+exclude_patterns = []
+min_size = 0
+max_size = 10485760
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/TrojanDropper.PS.AddTypeKernel32"
+severity = 85
+description = "PowerShell Add-Type with kernel32 native calls (injection shellcode path)"
+patterns = ["add-type", "kernel32", "virtualalloc|createremotethread|writeprocessmemory|rtlmovememory"]
+exclude_patterns = []
+min_size = 0
+max_size = 10485760
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/Trojan.PS.CertutilDecode"
+severity = 82
+description = "PowerShell/CMD decodes payload via certutil then executes"
+patterns = ["certutil", "-decode", "powershell|-f"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/TrojanSpy.PS.Keylogger"
+severity = 88
+description = "PowerShell keylogger via GetAsyncKeyState / hooks"
+patterns = ["getasynckeystate", "getforegroundwindow|mapvirtualkey|setwindowshookex"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/Trojan.PS.ClipboardHijack"
+severity = 85
+description = "PowerShell clipboard monitor to replace crypto addresses"
+patterns = ["setclipboardviewer|addclipboardformatlistener", "getclipboarddata"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/Miner.PS.Cryptominer"
+severity = 88
+description = "PowerShell/script cryptominer configuration"
+patterns = ["xmrig|cpuminer|minerd|xmrig.exe", "stratum+tcp|--donate-level|--algo|--rig-id"]
+exclude_patterns = []
+min_size = 0
+max_size = 10485760
+language_hint = "ps1"
+
+---
+
+# ============================================================
+# B. CMD / Batch
+# ============================================================
+
+[[rule]]
+family = "BSD/TrojanDropper.CMD.WMIExec"
+severity = 90
+description = "Batch uses WMI to create remote/local processes"
+patterns = ["wmic", "process call create", "powershell|http|cmd /c"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "cmd"
+
+---
+[[rule]]
+family = "BSD/TrojanDownloader.CMD.Bitsadmin"
+severity = 88
+description = "Batch downloads payload via Bitsadmin and executes"
+patterns = ["bitsadmin", "/download", "powershell|http"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "cmd"
+
+---
+[[rule]]
+family = "BSD/TrojanDownloader.CMD.Certutil"
+severity = 86
+description = "Batch downloads via certutil URL cache and runs payload"
+patterns = ["certutil", "-urlcache", "-f"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "cmd"
+
+---
+[[rule]]
+family = "BSD/TrojanDropper.CMD.NetUserAdmin"
+severity = 84
+description = "Batch adds user to local administrators group"
+patterns = ["net user", "net localgroup administrators|net localgroup administrators /add"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "cmd"
+
+---
+[[rule]]
+family = "BSD/Trojan.CMD.SchtasksPersistence"
+severity = 84
+description = "Batch creates scheduled task executing payload"
+patterns = ["schtasks", "/create|/sc", "powershell|regsvr32|rundll32|wscript|cscript"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "cmd"
+
+---
+[[rule]]
+family = "BSD/Trojan.CMD.RegRunPersistence"
+severity = 86
+description = "Batch adds Run-key startup persistence"
+patterns = ["reg add", "currentversion", "run", "powershell|http|wscript|regsvr32|rundll32"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "cmd"
+
+---
+[[rule]]
+family = "BSD/TrojanDownloader.CMD.FTPDropper"
+severity = 80
+description = "Batch FTP script (echo open/echo user/binary) downloads .exe and runs it"
+patterns = ["ftp", "get ", ".exe", "echo open|echo user|ftp -s:|binary"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "cmd"
+
+---
+[[rule]]
+family = "BSD/Trojan.CMD.EncodedPS"
+severity = 90
+description = "Batch launches hidden encoded PowerShell"
+patterns = ["powershell", "-enc|encodedcommand", "hidden|-windowstyle hidden"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "cmd"
+
+---
+[[rule]]
+family = "BSD/Trojan.CMD.VSSDelete"
+severity = 82
+description = "Batch deletes Volume Shadow Copies (ransomware preparation)"
+patterns = ["vssadmin", "delete shadows|delete shadowstorage"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "cmd"
+
+---
+[[rule]]
+family = "BSD/Trojan.CMD.FirewallDisable"
+severity = 84
+description = "Batch disables Windows firewall"
+patterns = ["netsh", "firewall", "opmode disable|delete"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "cmd"
+
+---
+
+# ============================================================
+# C. VBS
+# ============================================================
+
+[[rule]]
+family = "BSD/TrojanDownloader.VBS.NetworkDownloadRun"
+severity = 86
+description = "VBS downloads file and executes via shell Run"
+patterns = ["downloadfile|savetofile", "wscript.shell", "run("]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "vbs"
+
+---
+[[rule]]
+family = "BSD/TrojanDropper.VBS.ChrDecodeRun"
+severity = 85
+description = "VBS deobfuscates with Chr() loop then executes"
+patterns = ["chr(", "wscript.shell", "run("]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "vbs"
+
+---
+[[rule]]
+family = "BSD/TrojanDropper.VBS.FSOWriteRun"
+severity = 82
+description = "VBS writes script/dropper via FSO then executes"
+# 要求写出目标为脚本文件（.ps1/.bat/.cmd/.vbs/.js/.hta 等）才判定投毒；
+# 系统诊断脚本仅把系统信息写入 .txt/.log 报告再 shell.Run 收集，不涉及脚本文件。
+patterns = ["scripting.filesystemobject", "createtextfile|opentextfile|writeline|write", "wscript.shell", ".ps1|.bat|.cmd|.vbs|.js|.hta|.vbe|.jse"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "vbs"
+
+---
+[[rule]]
+family = "BSD/Trojan.VBS.RegRunPersistence"
+severity = 84
+description = "VBS writes Run-key startup persistence"
+patterns = ["regwrite", "currentversion", "run"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "vbs"
+
+---
+[[rule]]
+family = "BSD/TrojanDropper.VBS.DanishBallas"
+severity = 92
+description = "VBS 'ballas' split-string obfuscation with shell execution"
+patterns = ["ballas", "wscript.shell"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "vbs"
+
+---
+
+# ============================================================
+# D. JS / JScript
+# ============================================================
+
+[[rule]]
+family = "BSD/TrojanDropper.JS.ActiveXRun"
+severity = 85
+description = "JScript creates ActiveX shell object and runs command"
+patterns = ["activexobject", "wscript.shell", "run("]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "js"
+
+---
+[[rule]]
+family = "BSD/TrojanDownloader.JS.XmlHttpStream"
+severity = 88
+description = "JScript downloads via XMLHTTP and saves via ADODB.Stream"
+patterns = ["xmlhttp", "adodb.stream", "savetofile"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "js"
+
+---
+[[rule]]
+family = "BSD/TrojanDropper.JS.ScriptControl"
+severity = 82
+description = "JScript uses ScriptControl to run embedded script language"
+patterns = ["scriptcontrol", "vbscript|jscript|javascript", "addcode|eval"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "js"
+
+---
+[[rule]]
+family = "BSD/TrojanDropper.JS.HexArrayPacker"
+severity = 85
+description = "JScript _0x hex-array packer with fromCharCode decoder"
+patterns = ["_0x", "fromcharcode", "eval(|decodeuri"]
+exclude_patterns = []
+min_size = 0
+max_size = 10485760
+language_hint = "js"
+
+---
+[[rule]]
+family = "BSD/TrojanDropper.JS.SwitchVM"
+severity = 84
+description = "JScript switch-case VM decoder with hex array"
+patterns = ["_0x", "switch", "eval("]
+exclude_patterns = []
+min_size = 0
+max_size = 10485760
+language_hint = "js"
+
+---
+[[rule]]
+family = "BSD/TrojanDropper.JS.XORHexDecoder"
+severity = 85
+description = "JScript XOR hex decoder with fromCharCode + parseInt"
+# fromCharCode + parseInt + 0x 在压缩 bundle 中必然同现，需再加 Windows 脚本宿主执行 sink
+# （ActiveXObject/WScript/execScript）才构成投毒解码器；浏览器 bundle 无此 sink。
+patterns = ["fromcharcode", "parseint(", "0x", "activexobject|wscript|execscript"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "js"
+
+---
+[[rule]]
+family = "BSD/TrojanDropper.JS.Base64Eval"
+severity = 84
+description = "JScript base64-decodes and evals payload"
+patterns = ["atob(|base64tostring|base64decode", "eval(", "wscript|activexobject"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "js"
+
+---
+
+# ============================================================
+# E. HTA
+# ============================================================
+
+[[rule]]
+family = "BSD/TrojanDownloader.HTA.EncodedCMD"
+severity = 90
+description = "HTA launches encoded PowerShell via cmd"
+patterns = ["hta:application", "cmd.exe", "-enc|encodedcommand"]
+exclude_patterns = ["<html>", "<head>"]
+min_size = 0
+max_size = 5242880
+language_hint = "hta"
+
+---
+[[rule]]
+family = "BSD/TrojanDownloader.HTA.MshtaRemote"
+severity = 86
+description = "HTA executes remote mshta payload"
+patterns = ["hta:application", "mshta", "http"]
+exclude_patterns = ["<html>", "<head>"]
+min_size = 0
+max_size = 5242880
+language_hint = "hta"
+
+---
+[[rule]]
+family = "BSD/Trojan.HTA.RegPersistence"
+severity = 88
+description = "HTA adds Run-key startup persistence"
+patterns = ["hta:application", "reg add|regwrite", "currentversion", "run"]
+exclude_patterns = ["<html>", "<head>"]
+min_size = 0
+max_size = 5242880
+language_hint = "hta"
+
+---
+[[rule]]
+family = "BSD/Trojan-Obfuscated.HTA.Generic"
+severity = 82
+description = "Generic obfuscated HTA with execute tricks"
+patterns = ["hta:application", "execute"]
+exclude_patterns = ["<html>", "<head>"]
+min_size = 0
+max_size = 5242880
+language_hint = "hta"
+
+---
+[[rule]]
+family = "BSD/Trojan-Obfuscated.HTA.UnicodePadded"
+severity = 80
+description = "HTA padded with large dead code"
+patterns = ["hta:application|wscript.shell", "powershell"]
+exclude_patterns = []
+min_size = 10000
+max_size = 20971520
+language_hint = "hta"
+
+---
+
+# ============================================================
+# F. LNK
+# ============================================================
+
+[[rule]]
+family = "BSD/TrojanDownloader.LNK.EncodedDownload"
+severity = 90
+description = "LNK runs encoded PowerShell download cradle"
+patterns = ["powershell", "-enc|encodedcommand", "http|iwr|downloadstring"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "lnk"
+
+---
+[[rule]]
+family = "BSD/TrojanDownloader.LNK.MshtaRemote"
+severity = 85
+description = "LNK launches mshta with remote payload"
+patterns = ["mshta", "http"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "lnk"
+
+---
+[[rule]]
+family = "BSD/Trojan.LNK.RegPersistence"
+severity = 84
+description = "LNK uses powershell to WRITE Run-key persistence (reg add / Set-ItemProperty)"
+patterns = ["powershell", "currentversion\run", "reg add|new-itemproperty|set-itemproperty|remove-itemproperty|setvalue"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "lnk"
+
+---
+[[rule]]
+family = "BSD/Trojan-Obfuscated.LNK.HiddenEnc"
+severity = 85
+description = "Obfuscated LNK with hidden encoded PowerShell"
+patterns = ["powershell", "encodedcommand|-enc", "hidden"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "lnk"
+
+---
+
+# ============================================================
+# G. 通用 / 跨语言（Generic）
+# ============================================================
+
+[[rule]]
+family = "BSD/Trojan-Dropper.Win32.MBRWriter"
+severity = 100
+description = "Script attempting to write directly to physical disk (MBR/DBR)"
+patterns = ["physicaldrive"]
+exclude_patterns = ["generic_read"]
+min_size = 0
+max_size = 5242880
+language_hint = "all"
+
+---
+[[rule]]
+family = "BSD/TrojanSpy.TelegramExfil"
+severity = 90
+description = "Script exfiltrates data via Telegram bot API"
+patterns = ["api.telegram.org", "bot", "senddocument|sendmessage|sendphoto|getfile"]
+exclude_patterns = []
+min_size = 0
+max_size = 10485760
+language_hint = "all"
+
+---
+[[rule]]
+family = "BSD/TrojanSpy.DiscordWebhook"
+severity = 84
+description = "Script exfiltrates data via Discord webhook"
+patterns = ["discord.com/api/webhooks|discordapp.com/api/webhooks"]
+exclude_patterns = []
+min_size = 0
+max_size = 10485760
+language_hint = "all"
+
+---
+[[rule]]
+family = "BSD/TrojanSpy.ScreenCapture"
+severity = 80
+description = "Script captures screen via GDI"
+patterns = ["copyfromscreen|bitblt", "getdc|getwindowdc|createcompatiblebitmap"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "all"
+
+---
+[[rule]]
+family = "BSD/Ransomware.RansomNote"
+severity = 88
+description = "Script containing ransomware ransom-note elements"
+patterns = ["readme", "bitcoin|btc|wallet", ".onion|tor"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "all"
+
+---
+[[rule]]
+family = "BSD/Trojan.RegDefenderDisable"
+severity = 86
+description = "Script disables Defender via registry"
+patterns = ["defender", "disablerealtimemonitoring|disableantispyware|pausefeature|disableantivirus"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "all"
+
+---
+[[rule]]
+family = "BSD/Trojan-Dropper.CMD.DiskpartClean"
+severity = 78
+description = "Script cleans disks via diskpart (potential MBR wiper)"
+patterns = ["diskpart", "clean"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "all"
+
+---
+[[rule]]
+family = "BSD/Trojan.ScheduledTaskAutoStart"
+severity = 82
+description = "Script registers startup/on-logon scheduled task"
+patterns = ["schtasks|register-scheduledtask", "onlogon|onstart"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "all"
+
+---
+[[rule]]
+family = "BSD/Trojan-Obfuscated.Script.UnicodePadded"
+severity = 78
+description = "Script padded with high-ratio dead code"
+patterns = ["wscript.shell|powershell"]
+exclude_patterns = []
+min_size = 5242880
+max_size = 52428800
+language_hint = "all"
+
+---
+
+# ============================================================
+# H. PowerShell 进阶（内存执行 / 凭据窃取 / 逃逸）
+# ============================================================
+
+[[rule]]
+family = "BSD/TrojanDropper.PS.ReflectiveAssemblyLoad"
+severity = 88
+description = "PowerShell reflectively loads assembly AND downloads/decodes/executes it"
+# 第一组要求 "::load("（内存字节加载），排除 LoadWithPartialName（系统诊断脚本加载组件）；
+# 第二组仅保留真实下载/解码原语，去掉宽泛的 invoke-expression/iex/http 以免误报网络诊断脚本。
+patterns = ["[reflection.assembly]::load(|[reflection.assembly]::loadfrom|[reflection.assembly]::loadfile|invoke-assembly|unmanagedpowershell", "downloadstring|downloadfile|webclient|frombase64string|start-bitstransfer"]
+exclude_patterns = []
+min_size = 0
+max_size = 10485760
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/TrojanSpy.PS.LsassMiniDump"
+severity = 95
+description = "PowerShell dumps LSASS process memory via MiniDumpWriteDump"
+patterns = ["minidumpwritedump|procdump|sqldumper", "lsass"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/TrojanSpy.PS.RegHiveDump"
+severity = 92
+description = "PowerShell saves SAM/SYSTEM/SECURITY registry hives for offline credential dump"
+patterns = ["reg save", "hklm\sam|hklm\system|hklm\security"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/Evasion.PS.AddDefenderExclusion"
+severity = 88
+description = "PowerShell adds Defender exclusions to hide payload"
+patterns = ["add-mppreference", "exclusionpath|exclusionprocess|exclusionextension"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/AntiForensics.PS.EventLogClear"
+severity = 84
+description = "PowerShell clears event logs to hide traces"
+patterns = ["clear-eventlog|wevtutil cl|wevtutil clear-log"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/Trojan.PS.WMIEventPersistence"
+severity = 92
+description = "PowerShell registers WMI event subscription for persistence"
+patterns = ["__eventfilter|__eventconsumer|__filtertoconsumerbinding|active script event"]
+exclude_patterns = []
+min_size = 0
+max_size = 10485760
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/TrojanDropper.PS.ComObjectExec"
+severity = 84
+description = "PowerShell creates COM shell object AND executes a payload (download/encoded/cmd)"
+patterns = ["new-object -comobject", "wscript.shell|shell.application|excel.application", ".run(|.exec(|start-process", "downloadstring|downloadfile|webclient|encodedcommand|frombase64string|mshta|rundll32|regsvr32|invoke-expression|cmd.exe|powershell"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/Trojan.PS.WinRMLateral"
+severity = 86
+description = "PowerShell uses WinRM for remote execution"
+patterns = ["winrm", "invoke-command|create", "http|powershell"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "ps1"
+
+---
+[[rule]]
+family = "BSD/Ransomware.PS.ScriptEncryptor"
+severity = 92
+description = "PowerShell script ransomware: recurse and encrypt files"
+patterns = ["get-childitem|gci", "-recurse", "aes|rijndael|encryptstring|set-content"]
+exclude_patterns = []
+min_size = 0
+max_size = 10485760
+language_hint = "ps1"
+
+---
+
+# ============================================================
+# I. CMD / LOLBins
+# ============================================================
+
+[[rule]]
+family = "BSD/TrojanDownloader.CMD.PowershellCradle"
+severity = 88
+description = "Batch launches PowerShell download-and-execute cradle"
+patterns = ["powershell", "-c|command", "iex|invoke-expression|downloadstring"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "cmd"
+
+---
+[[rule]]
+family = "BSD/TrojanDropper.CMD.MsbuildExec"
+severity = 84
+description = "Batch executes payload via MSBuild project file"
+patterns = ["msbuild", ".csproj|.xml", "http|powershell"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "cmd"
+
+---
+[[rule]]
+family = "BSD/TrojanDownloader.CMD.MshtaRemote"
+severity = 85
+description = "Batch executes remote HTA via mshta"
+patterns = ["mshta", "http"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "cmd"
+
+---
+[[rule]]
+family = "BSD/Trojan.CMD.ShadowCopyDisable"
+severity = 86
+description = "Batch disables/deletes Volume Shadow Copies (ransomware prep)"
+patterns = ["vssadmin", "delete shadows|resize shadowstorage"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "cmd"
+
+---
+[[rule]]
+family = "BSD/Evasion.CMD.ExecutionPolicyBypass"
+severity = 82
+description = "Batch invokes PowerShell with execution policy bypass"
+patterns = ["powershell", "bypass", "-executionpolicy|-ep"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "cmd"
+
+---
+[[rule]]
+family = "BSD/TrojanDropper.CMD.Regsvr32Scrobj"
+severity = 86
+description = "Batch runs scriptlet via regsvr32 scrobj.dll"
+patterns = ["regsvr32", "scrobj.dll", "/s|/i"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "cmd"
+
+---
+
+# ============================================================
+# J. VBS / JS 补充
+# ============================================================
+
+[[rule]]
+family = "BSD/TrojanDropper.VBS.EncodedPSLaunch"
+severity = 88
+description = "VBS launches hidden encoded PowerShell"
+patterns = ["powershell", "-enc|encodedcommand", "wscript.shell|shell.run"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "vbs"
+
+---
+[[rule]]
+family = "BSD/TrojanDropper.VBS.WMIProcessExec"
+severity = 86
+description = "VBS creates process via WMI Win32_Process"
+patterns = ["winmgmts|wmi", "win32_process", "create"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "vbs"
+
+---
+[[rule]]
+family = "BSD/TrojanDownloader.JS.FileSystemObjectRun"
+severity = 87
+description = "JScript downloads via FSO/XMLHTTP then runs"
+patterns = ["filesystemobject|scripting.filesystemobject", "xmlhttp|adodb.stream|downloadfile", "wscript.shell|run|exec"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "js"
+
+---
+[[rule]]
+family = "BSD/TrojanDropper.JS.ADODBWriteExe"
+severity = 85
+description = "JScript writes executable payload via ADODB.Stream"
+patterns = ["adodb.stream", "savetofile|write", ".exe|.dll|.vbs|.bat"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "js"
+
+---
+
+# ============================================================
+# K. HTA / LNK 补充
+# ============================================================
+
+[[rule]]
+family = "BSD/TrojanDownloader.HTA.PowershellIEX"
+severity = 90
+description = "HTA runs PowerShell IEX download cradle"
+patterns = ["hta:application", "powershell", "iex|invoke-expression|downloadstring|http"]
+exclude_patterns = ["<html>", "<head>"]
+min_size = 0
+max_size = 5242880
+language_hint = "hta"
+
+---
+[[rule]]
+family = "BSD/Trojan.HTA.MsiexecSilentInstall"
+severity = 86
+description = "HTA silently installs MSI payload"
+patterns = ["hta:application", "msiexec", "/i|/quiet|/qn"]
+exclude_patterns = ["<html>", "<head>"]
+min_size = 0
+max_size = 5242880
+language_hint = "hta"
+
+---
+[[rule]]
+family = "BSD/Trojan.HTA.StartupPersistence"
+severity = 84
+description = "HTA copies payload into Startup folder"
+patterns = ["hta:application", "startup|start menu", "copy|writeline"]
+exclude_patterns = ["<html>", "<head>"]
+min_size = 0
+max_size = 5242880
+language_hint = "hta"
+
+---
+[[rule]]
+family = "BSD/TrojanDownloader.LNK.PowershellIEX"
+severity = 88
+description = "LNK runs PowerShell IEX download cradle"
+patterns = ["powershell", "iex|invoke-expression", "downloadstring|http"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "lnk"
+
+---
+[[rule]]
+family = "BSD/TrojanDropper.LNK.MsbuildExec"
+severity = 84
+description = "LNK executes MSBuild project payload"
+patterns = ["msbuild", ".csproj"]
+exclude_patterns = []
+min_size = 0
+max_size = 1048576
+language_hint = "lnk"
+
+---
+
+# ============================================================
+# L. 通用 / 跨语言补充（Generic）
+# ============================================================
+
+[[rule]]
+family = "BSD/Evasion.Generic.AntiVM"
+severity = 74
+description = "Script checks for VM/sandbox processes or services"
+patterns = ["vmtoolsd|vboxservice|vbox|vmware|virtualbox|qemu|sandboxie", "getprocess|wmic|wmiobject|tasklist|get-service"]
+exclude_patterns = []
+min_size = 0
+max_size = 10485760
+language_hint = "all"
+
+---
+[[rule]]
+family = "BSD/TrojanSpy.Generic.BrowserCredSteal"
+severity = 90
+description = "Script copies browser credential DBs, archives them, and exfiltrates via upload"
+patterns = ["login data|cookies|web data|key4.db|logins.json", "copy-item|copyfile|file.copy|compress-archive|zipfile|zip::|7z ", "invoke-webrequest|webclient|xmlhttp|upload|webhook|api.telegram|discord.com|send-mailmessage|smtp"]
+exclude_patterns = []
+min_size = 0
+max_size = 10485760
+language_hint = "all"
+
+---
+[[rule]]
+family = "BSD/TrojanSpy.Generic.CryptoWalletSteal"
+severity = 90
+description = "Script steals crypto wallet files and exfiltrates them"
+patterns = ["wallet|wallet.dat|exodus|metamask|atomic", "appdata|roaming", "zip|http|telegram|discord"]
+exclude_patterns = []
+min_size = 0
+max_size = 10485760
+language_hint = "all"
+
+---
+[[rule]]
+family = "BSD/Trojan.Generic.StartupFolderPersist"
+severity = 84
+description = "Script copies payload into Startup folder for persistence"
+patterns = ["start menu\programs\startup|startup folder", "copy|writeline|set-content|>"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "all"
+
+---
+[[rule]]
+family = "BSD/Evasion.Generic.MshtaJavascript"
+severity = 85
+description = "Script uses mshta with javascript payload"
+patterns = ["mshta", "javascript:"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "all"
+
+---
+[[rule]]
+family = "BSD/Evasion.Generic.Rundll32Javascript"
+severity = 86
+description = "Script uses rundll32 with javascript/scrobj payload"
+patterns = ["rundll32", "javascript:", "scrobj.dll"]
+exclude_patterns = []
+min_size = 0
+max_size = 5242880
+language_hint = "all"
+
+---
+[[rule]]
+family = "BSD/Trojan.Generic.WMIEventPersistence"
+severity = 90
+description = "Script registers WMI event subscription for persistence"
+patterns = ["__eventfilter|active script event|eventconsumer"]
+exclude_patterns = []
+min_size = 0
+max_size = 10485760
+language_hint = "all"
+
+---
+[[rule]]
+family = "BSD/TrojanDownloader.Generic.HttpIEX"
+severity = 88
+description = "Generic HTTP download-and-execute via IEX"
+patterns = ["iex|invoke-expression", "downloadstring|downloadfile|webclient", "http"]
+exclude_patterns = []
+min_size = 0
+max_size = 10485760
+language_hint = "all"

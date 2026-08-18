@@ -6,6 +6,8 @@
 #include "RegistryCallback.h"
 #include "Whitelist.h"
 #include "ci_verify.h"         /* CiRecordProcessSignature */
+#include "DriverDllInject.h"         /* 驱动端 DLL 注入核心库（参考 injdrv） */
+#include "VulnerableDriver.h"        /* 漏洞驱动（BYOVD）加载拦截 */
 #include <ntimage.h>
 #include <ntstrsafe.h>
 
@@ -277,134 +279,6 @@ typedef VOID (NTAPI *PKRUNDOWN_ROUTINE)(
 #define PKRUNDOWN_ROUTINE_DEFINED
 #endif
 
-/* ── 远程线程注入上下文 ──
- * LoadImageNotifyRoutine 在 kernel32.dll 加载时触发，此时当前线程正处
- * 于 NtMapViewOfSection 调用栈中，EPROCESS->AddressCreationLock 可能
- * 已被持有。若直接调用 ZwAllocateVirtualMemory 会递归获取该锁导致死锁。
- *
- * 因此将实际注入操作推迟到 work item（系统线程，PASSIVE_LEVEL）中执行：
- *   1. 附加到目标进程，分配内存并写入 DLL 路径
- *   2. 通过 RtlCreateUserThread 创建远程线程调用 LoadLibraryW 加载 DLL
- */
-typedef struct _INJECT_APC_CTX {
-    WORK_QUEUE_ITEM WorkItem; /* PASSIVE_LEVEL 注入 work item */
-    HANDLE ProcessId;       /* 目标进程 PID */
-    PVOID LoadLibraryW;     /* kernel32.dll!LoadLibraryW 地址 */
-    WCHAR DllPath[260];     /* DLL 路径 */
-    SIZE_T PathBytes;       /* DLL 路径字节数 */
-    BOOLEAN Is64Bit;        /* 目标进程是否为 64 位 */
-} INJECT_APC_CTX, *PINJECT_APC_CTX;
-
-/* kernel32.dll 中 LoadLibraryW 的地址：在 kernel32 加载通知中解析并缓存，
- * 后续通过远程线程调用 LoadLibraryW 加载防御 DLL。
- * 64 位和 32 位（WOW64）的 kernel32.dll 地址空间不同，必须分开缓存。 */
-static PVOID g_Kernel32LoadLibraryW64 = NULL;  /* 64 位 kernel32.dll 中的 LoadLibraryW */
-static PVOID g_Kernel32LoadLibraryW32 = NULL;  /* 32 位（WOW64）kernel32.dll 中的 LoadLibraryW */
-
-/* ── Pending 注入 work item 跟踪 ──
- * 驱动卸载时必须等待所有 pending 的注入 work item 完成，
- * 否则 work item 线程可能访问已释放的驱动代码/数据导致蓝屏。 */
-static volatile LONG g_PendingInjectCount = 0;
-static KEVENT g_NoPendingInjectEvent;
-
-VOID InjectPendingInit(VOID)
-{
-    KeInitializeEvent(&g_NoPendingInjectEvent, NotificationEvent, TRUE);
-    g_PendingInjectCount = 0;
-}
-
-VOID InjectPendingWaitAll(VOID)
-{
-    if (g_PendingInjectCount > 0)
-    {
-        LARGE_INTEGER timeout;
-        timeout.QuadPart = -150000000; /* 15 秒超时（100ns 单位） */
-        DriverDbgPrint("[INJECT-UNLOAD] Waiting for %d pending inject work items...\n",
-            g_PendingInjectCount);
-        KeWaitForSingleObject(&g_NoPendingInjectEvent, Executive, KernelMode, FALSE, &timeout);
-        DriverDbgPrint("[INJECT-UNLOAD] All pending inject work items completed\n");
-    }
-}
-
-/* 标记注入 work item 开始（在排队前调用） */
-static VOID InjectPendingBegin(VOID)
-{
-    InterlockedIncrement(&g_PendingInjectCount);
-    KeClearEvent(&g_NoPendingInjectEvent);
-}
-
-/* 标记注入 work item 结束（在 work item 退出前调用） */
-static VOID InjectPendingEnd(VOID)
-{
-    if (InterlockedDecrement(&g_PendingInjectCount) == 0)
-    {
-        KeSetEvent(&g_NoPendingInjectEvent, 0, FALSE);
-    }
-}
-
-/* ── 注入去重表 ──
- * kernel32.dll 可能因 apiset 子系统解析等原因被多次映射到同一进程，
- * 每次映射都会触发 LoadImageNotifyRoutine。若不去重，同一进程会被
- * 重复注入多次，导致 LoadLibraryW 并发执行、LoaderLock 竞争、崩溃。
- * 64 槽位环形缓冲，进程退出时由 InjectCleanupPid 清理对应条目。 */
-#define MAX_INJECTED_PIDS 64
-static HANDLE g_InjectedPids[MAX_INJECTED_PIDS];
-static KSPIN_LOCK g_InjectedPidsLock;
-
-/* 标记 PID 为已注入，返回 TRUE 表示之前已标记（重复注入，应跳过） */
-static BOOLEAN InjectMarkPid(HANDLE pid)
-{
-    KIRQL oldIrql;
-    ULONG i;
-    BOOLEAN alreadyInjected = FALSE;
-
-    KeAcquireSpinLock(&g_InjectedPidsLock, &oldIrql);
-    for (i = 0; i < MAX_INJECTED_PIDS; i++)
-    {
-        if (g_InjectedPids[i] == pid)
-        {
-            alreadyInjected = TRUE;
-            break;
-        }
-    }
-    if (!alreadyInjected)
-    {
-        /* 找空槽位放入 */
-        for (i = 0; i < MAX_INJECTED_PIDS; i++)
-        {
-            if (g_InjectedPids[i] == NULL)
-            {
-                g_InjectedPids[i] = pid;
-                break;
-            }
-        }
-        /* 表满则覆盖最早的条目（简单回退） */
-        if (i == MAX_INJECTED_PIDS)
-        {
-            g_InjectedPids[0] = pid;
-        }
-    }
-    KeReleaseSpinLock(&g_InjectedPidsLock, oldIrql);
-    return alreadyInjected;
-}
-
-/* 进程退出时清理去重表，防止 PID 复用后新进程被误判为已注入 */
-VOID InjectCleanupPid(HANDLE pid)
-{
-    KIRQL oldIrql;
-    ULONG i;
-    KeAcquireSpinLock(&g_InjectedPidsLock, &oldIrql);
-    for (i = 0; i < MAX_INJECTED_PIDS; i++)
-    {
-        if (g_InjectedPids[i] == pid)
-        {
-            g_InjectedPids[i] = NULL;
-            break;
-        }
-    }
-    KeReleaseSpinLock(&g_InjectedPidsLock, oldIrql);
-}
-
 /* ── 句柄层注入告警 work item 上下文 ──
  * ObRegisterCallbacks PreOperation 回调可能在 DISPATCH_LEVEL 执行，不能调用
  * 复杂/可分页函数。这里只记录原始句柄信息并排队 work item，由系统线程在
@@ -421,7 +295,6 @@ typedef struct _HANDLE_ALERT_WORKITEM_CTX {
 
 /* 前向声明 */
 static VOID HandleAlertWorkItemRoutine(PVOID Context);
-static VOID InjectApcWorkItemRoutine(PVOID Context);
 
 // 声明未导出的内核 API
 NTKERNELAPI UCHAR* PsGetProcessImageFileName(__in PEPROCESS Process);
@@ -1448,7 +1321,8 @@ VOID NTAPI ThreadCreateNotifyRoutine(
         (INT64)(ULONG_PTR)currentProcessId, sourceName,
         (INT64)(ULONG_PTR)ProcessId, targetName,
         "DefenseEvasion/Injection:CreateRemoteThread.T1055.002",
-        (INT64)(ULONG_PTR)ThreadId);
+        (INT64)(ULONG_PTR)ThreadId,
+        threadStartAddr);
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
@@ -1664,7 +1538,8 @@ static BOOLEAN DetectDllLoadViaRop(
             (INT64)pid,
             procNameA,
             "DLL Load via ROP (no valid return address)",
-            0);
+            0,
+            NULL);
     }
 
 Cleanup:
@@ -1704,15 +1579,6 @@ VOID NTAPI LoadImageNotifyRoutine(
     _In_ HANDLE ProcessId,
     _In_ PIMAGE_INFO ImageInfo)
 {
-    UNICODE_STRING ksName;
-    UNICODE_STRING tailStr;
-    USHORT ksLen;
-    SIZE_T pathBytes;
-    PWCHAR imgTail;
-    BOOLEAN is64Bit = FALSE;
-    WCHAR fullDllPath[260];
-
-
 
     /* ── Ntdll 处理 ──
      * 无论 R3 防护是否启用，都检测 ntdll.dll 加载：
@@ -1730,6 +1596,15 @@ VOID NTAPI LoadImageNotifyRoutine(
                 FullImageName->Buffer,
                 NULL);
         }
+    }
+
+    /* ── 漏洞驱动（BYOVD）加载拦截 ──
+     * 识别 .sys 驱动镜像，排队 work item 在 PASSIVE_LEVEL 计算 SHA256 并
+     * 与黑名单比对，命中则终止发起加载的进程。独立于 R3 防护开关运行。 */
+    if (FullImageName && FullImageName->Buffer &&
+        VdIsDriverImagePath(FullImageName))
+    {
+        VdQueueCheck(FullImageName, ProcessId);
     }
 
     /* R3 DLL 防护未启用时禁止注入：用户态必须显式开启 R3 防护后，
@@ -1920,6 +1795,69 @@ VOID NTAPI LoadImageNotifyRoutine(
                         }
                         dllPathA[wlen] = '\0';
 
+                        /* ── 同目录未签名 DLL 检测（Side-Load 降级）──
+                         * 提取进程 EXE 所在目录，与 DLL 路径比较。
+                         * 若 DLL 与 EXE 同目录且 DLL 未签名，则标记该进程为不可信。 */
+                        BOOLEAN sameDirUnsignedDll = FALSE;
+                        {
+                            /* 找进程路径最后反斜杠位置（EXE 文件名之前） */
+                            INT lastSlash = -1;
+                            for (int si = 0; processPath[si] != '\0'; si++)
+                            {
+                                if (processPath[si] == '\\' || processPath[si] == '/')
+                                    lastSlash = si;
+                            }
+                            if (lastSlash >= 0)
+                            {
+                                /* 提取 EXE 目录路径 */
+                                CHAR exeDir[512] = { 0 };
+                                INT dirLen = lastSlash;
+                                if (dirLen >= (INT)sizeof(exeDir)) dirLen = (INT)sizeof(exeDir) - 1;
+                                RtlCopyMemory(exeDir, processPath, (UINT32)dirLen);
+                                exeDir[dirLen] = '\0';
+
+                                /* 检查 DLL 是否在同目录：取 DLL 路径最后一个反斜杠后的部分作为文件名 */
+                                INT dllLastSlash = -1;
+                                for (int di = 0; dllPathA[di] != '\0'; di++)
+                                {
+                                    if (dllPathA[di] == '\\' || dllPathA[di] == '/')
+                                        dllLastSlash = di;
+                                }
+                                if (dllLastSlash >= 0)
+                                {
+                                    /* DLL 路径的前缀（目录部分）应与 exeDir 相同 */
+                                    INT dllDirLen = dllLastSlash;
+                                    if (dllDirLen == dirLen &&
+                                        RtlEqualMemory(exeDir, dllPathA, (SIZE_T)dirLen))
+                                    {
+                                        /* 同目录！检查 DLL 是否未签名 */
+                                        BOOLEAN dllSigned = CiIsImageSignedAndTrusted(ImageInfo);
+                                        if (!dllSigned)
+                                        {
+                                            sameDirUnsignedDll = TRUE;
+                                            DriverDbgPrint("[SIDE-LOAD] Same-dir unsigned DLL detected: PID=%d DLL=%s EXE_DIR=%s\n",
+                                                (INT)(ULONG_PTR)ProcessId, dllPathA, exeDir);
+                                        }
+                                    }
+                                }
+                            }
+
+                            /* 标记签名降级：无论是否阻塞扫描，都先降级签名状态 */
+                            if (sameDirUnsignedDll)
+                            {
+                                BaMarkPidUnsignedDueToSideLoad((INT64)(ULONG_PTR)ProcessId, dllPathA);
+                            }
+                        }
+
+                        /* 签名进程加载未签名 DLL、或任意进程加载同目录未签名 DLL（侧载）时进行 DLL 扫描告警 */
+                        {
+                            BOOLEAN processSigned = CiIsPidSigned((INT64)(ULONG_PTR)ProcessId);
+                            if (processSigned || sameDirUnsignedDll)
+                            {
+                                if (sameDirUnsignedDll)
+                                {
+                                    BehaviorRecordDllSideLoad((INT64)(ULONG_PTR)ProcessId, dllPathA, processSigned);
+                                }
                         DriverDbgPrint("[DLL-SCAN] Checking DLL signature: PID=%d DLL=%s Process=%s\n",
                             (INT)(ULONG_PTR)ProcessId, dllPathA, processPath);
 
@@ -1960,11 +1898,14 @@ VOID NTAPI LoadImageNotifyRoutine(
                             (INT64)(ULONG_PTR)ProcessId,
                             FullImageName->Buffer,
                             processPath,
-                            g_bDllBlockingScanEnabled);
+                            g_bDllBlockingScanEnabled,
+                            sameDirUnsignedDll ? TRUE : FALSE);
 
                         if (g_bDllBlockingScanEnabled)
                         {
                             return;
+                        }
+                            }
                         }
                     }
                 }
@@ -1977,599 +1918,40 @@ VOID NTAPI LoadImageNotifyRoutine(
 
 skip_dll_scan:
 
-    /* ── kernelbase.dll 检测 ──
-     * Windows 10+ 将 kernel32!LoadLibraryW 转发到 kernelbase!LoadLibraryW。
-     * kernelbase.dll 在 kernel32.dll 之前加载，在此缓存真实 LoadLibraryW 地址。
-     * FindExportByName 不处理转发导出，必须从 kernelbase.dll 获取真实地址。 */
-    {
-        UNICODE_STRING kbName;
-        RtlInitUnicodeString(&kbName, L"kernelbase.dll");
-        if (FullImageName->Length >= kbName.Length)
-        {
-            UNICODE_STRING kbTail;
-            kbTail.Buffer = (PWCHAR)((PUCHAR)FullImageName->Buffer + FullImageName->Length - kbName.Length);
-            kbTail.Length = kbName.Length;
-            kbTail.MaximumLength = kbName.Length;
-            if (RtlEqualUnicodeString(&kbName, &kbTail, TRUE))
-            {
-                if (!ImageInfo->ImagePartialMap)
-                {
-                    BOOLEAN kbIs64Bit = FALSE;
-                    __try
-                    {
-                        PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)ImageInfo->ImageBase;
-                        PIMAGE_NT_HEADERS ntHeaders = (PIMAGE_NT_HEADERS)((PUCHAR)ImageInfo->ImageBase + dosHeader->e_lfanew);
-                        kbIs64Bit = (ntHeaders->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC);
-                    }
-                    __except (EXCEPTION_EXECUTE_HANDLER)
-                    {
-                        return;
-                    }
-
-                    PVOID loadLibraryW = FindExportByName(ImageInfo->ImageBase, "LoadLibraryW");
-                    if (loadLibraryW)
-                    {
-                        if (kbIs64Bit)
-                            g_Kernel32LoadLibraryW64 = loadLibraryW;
-                        else
-                            g_Kernel32LoadLibraryW32 = loadLibraryW;
-                        DriverDbgPrint("[INJECT] kernelbase!LoadLibraryW cached: %s addr=0x%p PID=%lld\n",
-                            kbIs64Bit ? "64" : "32", loadLibraryW, (INT64)(ULONG_PTR)ProcessId);
-                    }
-                }
-                return;
-            }
-        }
-    }
-
-    /* 匹配 kernel32.dll（尾部大小写不敏感比较） */
-    RtlInitUnicodeString(&ksName, L"kernel32.dll");
-    ksLen = ksName.Length;
-    if (FullImageName->Length < ksLen)
-        return;
-
-    imgTail = (PWCHAR)((PUCHAR)FullImageName->Buffer + FullImageName->Length - ksLen);
-    tailStr.Buffer = imgTail;
-    tailStr.Length = ksLen;
-    tailStr.MaximumLength = ksLen;
-
-    if (!RtlEqualUnicodeString(&ksName, &tailStr, TRUE))
-        return;
-
-    /* 跳过部分映射：PsSetLoadImageNotifyRoutine 可能为尚未完全映射的镜像
-     * 触发回调，此时导出表尚未可用，解析会失败。等待完整映射回调再注入。 */
-    if (ImageInfo->ImagePartialMap)
-    {
-        return;
-    }
-
-    /* ── 记录进程主镜像签名状态到缓存表 ──
-     * 仅对 .exe 主程序记录，直接内联签名检查逻辑。
-     * 后续 BehaviorAnalysis 通过 CiIsPidSigned 查表判断进程是否可信。 */
+    /* ── 记录进程主 EXE 的签名状态到缓存 ──
+     * 进程主镜像（.exe）加载时，通过 ImageInfo->ImageSignatureLevel
+     * 判断是否带有有效签名（AUTHENTICODE 及以上）。签名状态写入缓存后，
+     * 后续的 BaMarkPidUnsignedDueToSideLoad、CiIsPidSigned 等检查才能正确工作。 */
+    if (FullImageName && FullImageName->Buffer && ProcessId > (HANDLE)4)
     {
         UNICODE_STRING exeExt;
-        UNICODE_STRING tail;
         RtlInitUnicodeString(&exeExt, L".exe");
         if (FullImageName->Length >= exeExt.Length)
         {
-            tail.Buffer = (PWCHAR)((PUCHAR)FullImageName->Buffer +
+            UNICODE_STRING tailExe;
+            tailExe.Buffer = (PWCHAR)((PUCHAR)FullImageName->Buffer +
                 FullImageName->Length - exeExt.Length);
-            tail.Length = exeExt.Length;
-            tail.MaximumLength = exeExt.Length;
-            if (RtlEqualUnicodeString(&tail, &exeExt, TRUE))
+            tailExe.Length = exeExt.Length;
+            tailExe.MaximumLength = exeExt.Length;
+            if (RtlEqualUnicodeString(&tailExe, &exeExt, TRUE))
             {
-                BOOLEAN isSigned = (ImageInfo &&
-                    ImageInfo->ImageSignatureLevel >= SE_SIGNING_LEVEL_AUTHENTICODE);
-                CiRecordProcessSignature((INT64)(ULONG_PTR)ProcessId, isSigned);
-            }
-        }
-    }
-
-    /* ── kernel32.dll 正在加载！──
-     * 解析 kernel32!LoadLibraryW 地址并缓存，然后排队 work item 执行远程线程注入。 */
-
-    /* 位数判断（修正）：
-     *   必须判断"目标进程的位数"，而不是"当前加载的 kernel32 镜像的位数"。
-     *   WoW64 进程启动时会先后加载 64-bit kernel32.dll（System32）和 32-bit kernel32.dll
-     *   （SysWOW64），触发两次 LoadImageNotifyRoutine。若按镜像位数判断，第一次回调
-     *   就会把 PID 标记为"已注入"并注入 64 位 DLL，第二次（32 位）回调被去重逻辑跳过，
-     *   导致 32 位进程实际只注入了 64 位 DLL（无法 hook 32 位应用代码）。
-     *
-     *   正确做法：用 PsGetProcessWow64Process 判断进程位数；同时校验"当前 kernel32
-     *   镜像位数 == 进程位数"才继续，否则 return 等下一次匹配的回调处理。 */
-    {
-        PEPROCESS proc = NULL;
-        PVOID wow64 = NULL;
-        if (!NT_SUCCESS(PsLookupProcessByProcessId(ProcessId, &proc)) || proc == NULL)
-        {
-            return;
-        }
-        wow64 = PsGetProcessWow64Process(proc);
-        ObDereferenceObject(proc);
-        /* wow64 != NULL → 32 位 WoW64 进程；wow64 == NULL → 64 位进程 */
-        is64Bit = (wow64 == NULL) ? TRUE : FALSE;
-    }
-
-    /* 镜像位数（用于缓存 LoadLibraryW 到正确槽位 + 一致性校验） */
-    {
-        BOOLEAN imageIs64Bit = FALSE;
-        __try
-        {
-            PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)ImageInfo->ImageBase;
-            PIMAGE_NT_HEADERS ntHeaders = (PIMAGE_NT_HEADERS)((PUCHAR)ImageInfo->ImageBase + dosHeader->e_lfanew);
-            imageIs64Bit = (ntHeaders->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            return;
-        }
-
-        /* 一致性校验：仅当"当前 kernel32 镜像位数 == 目标进程位数"时才继续，
-         * 否则 return 等下一次匹配的回调处理。
-         *   - 64 位进程：只在 64-bit kernel32.dll 回调继续（32-bit kernel32 永不加载）
-         *   - WoW64 进程：跳过 64-bit kernel32.dll 回调，只在 32-bit kernel32.dll 回调继续 */
-        if (imageIs64Bit != is64Bit)
-        {
-            return;
-        }
-
-        /* 解析 kernel32!LoadLibraryW（检测转发导出）
-         * Windows 10+ 的 kernel32!LoadLibraryW 是转发导出，指向 kernelbase!LoadLibraryW。
-         * FindExportByName 不处理转发导出，会返回转发字符串的地址（非可执行代码）。
-         * 如果检测到转发导出，使用之前在 kernelbase.dll 加载时缓存的地址。 */
-        {
-            PVOID loadLibraryW = FindExportByName(ImageInfo->ImageBase, "LoadLibraryW");
-            if (loadLibraryW)
-            {
-                /* 检测转发导出：返回地址的 RVA 落在导出目录范围内 → 转发导出 */
-                BOOLEAN isForwarder = FALSE;
-                __try
+                /* 跳过系统镜像（ntdll/kernel32 等本身不是主 EXE 加载） */
+                if (!IsNtdllImage(FullImageName) && !IsKernel32Image(FullImageName))
                 {
-                    PIMAGE_DOS_HEADER dosHeader2 = (PIMAGE_DOS_HEADER)ImageInfo->ImageBase;
-                    PIMAGE_NT_HEADERS ntHeaders2 = (PIMAGE_NT_HEADERS)((PUCHAR)ImageInfo->ImageBase + dosHeader2->e_lfanew);
-                    IMAGE_DATA_DIRECTORY exportDir2 = ntHeaders2->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
-                    ULONG exportStart = exportDir2.VirtualAddress;
-                    ULONG exportEnd = exportDir2.VirtualAddress + exportDir2.Size;
-                    ULONG rva = (ULONG)((PUCHAR)loadLibraryW - (PUCHAR)ImageInfo->ImageBase);
-                    if (rva >= exportStart && rva < exportEnd)
-                    {
-                        isForwarder = TRUE;
-                    }
-                }
-                __except (EXCEPTION_EXECUTE_HANDLER)
-                {
-                    isForwarder = TRUE;
-                }
-
-                if (!isForwarder)
-                {
-                    /* 直接导出，缓存 */
-                    if (is64Bit)
-                        g_Kernel32LoadLibraryW64 = loadLibraryW;
-                    else
-                        g_Kernel32LoadLibraryW32 = loadLibraryW;
-                }
-                /* 转发导出：不更新缓存，使用之前 kernelbase.dll 缓存的地址 */
-            }
-            /* FindExportByName 返回 NULL 也不报错：可能 kernelbase 已缓存了地址 */
-        }
-    }
-
-    RtlZeroMemory(fullDllPath, sizeof(fullDllPath));
-    RtlStringCbCopyW(fullDllPath, sizeof(fullDllPath), g_DllInjectPath);
-    if (is64Bit)
-        RtlStringCbCatW(fullDllPath, sizeof(fullDllPath), L"64.dll");
-    else
-        RtlStringCbCatW(fullDllPath, sizeof(fullDllPath), L"32.dll");
-
-    pathBytes = (wcslen(fullDllPath) + 1) * sizeof(WCHAR);
-
-    /* 去重检查：kernel32.dll 可能被多次映射（apiset 解析等），避免重复注入 */
-    if (InjectMarkPid(ProcessId))
-    {
-        return;
-    }
-
-    /* ── 跳过不应注入的进程 ──
-     * 系统关键进程不注入，避免干扰系统运行。 */
-    {
-        PEPROCESS proc = NULL;
-        if (NT_SUCCESS(PsLookupProcessByProcessId(ProcessId, &proc)))
-        {
-            UCHAR* pName = PsGetProcessImageFileName(proc);
-            if (pName)
-            {
-                CHAR shortName[16] = { 0 };
-                int i;
-                for (i = 0; i < 15 && pName[i]; i++)
-                {
-                    shortName[i] = (CHAR)pName[i];
-                }
-                shortName[i] = '\0';
-
-                if (IsKnownSystemProcessNameLocal(shortName))
-                {
-                    DriverDbgPrint("[INJECT] Skipping system process for injection: PID=%lld Name=%s\n",
-                        (INT64)(ULONG_PTR)ProcessId, shortName);
-                    ObDereferenceObject(proc);
-                    return;
+                    BOOLEAN isSigned = CiIsImageSignedAndTrusted(ImageInfo);
+                    CiRecordProcessSignature((INT64)(ULONG_PTR)ProcessId, isSigned);
+                    DriverDbgPrint("[SIG-RECORD] PID=%lld EXE signed=%d\n",
+                        (INT64)(ULONG_PTR)ProcessId, isSigned);
                 }
             }
-            ObDereferenceObject(proc);
         }
     }
 
-    /* ── 排队 work item 执行远程线程注入 ──
-     * 不在 LoadImageNotifyRoutine 中分配远程内存，避免在 NtMapViewOfSection
-     * 调用栈中递归获取 EPROCESS->AddressCreationLock 导致死锁。
-     *
-     * 改进方案（挂起初始线程）：
-     *   work item 中先挂起新进程的所有线程（阻止主线程执行），
-     *   等待 kernel32.dll 初始化完成（LoaderLock 释放），
-     *   创建远程线程执行 LoadLibraryW 注入 DLL，
-     *   最后恢复所有挂起的线程。
-     *   这样远程线程不会与主线程竞争 LoaderLock，避免
-     *   "连接到系统上的设备没有发挥作用"错误。 */
 
-    /* 检查 LoadLibraryW 地址是否已缓存（kernelbase.dll 或 kernel32.dll 直接导出） */
-    PVOID resolvedLoadLibraryW = is64Bit ? g_Kernel32LoadLibraryW64 : g_Kernel32LoadLibraryW32;
-    if (!resolvedLoadLibraryW)
-    {
-        DriverDbgPrint("[INJECT] LoadLibraryW not resolved yet (PID=%lld is64Bit=%d), skip\n",
-            (INT64)(ULONG_PTR)ProcessId, is64Bit);
-        return;
-    }
-
-    PINJECT_APC_CTX ctx = NULL;
-
-    __try
-    {
-        ctx = (PINJECT_APC_CTX)ExAllocatePool2(
-            POOL_FLAG_NON_PAGED, sizeof(INJECT_APC_CTX), 'apcC');
-        if (ctx)
-        {
-            RtlZeroMemory(ctx, sizeof(INJECT_APC_CTX));
-            ctx->ProcessId = ProcessId;
-            ctx->LoadLibraryW = resolvedLoadLibraryW;
-            ctx->Is64Bit = is64Bit;
-            RtlCopyMemory(ctx->DllPath, fullDllPath, pathBytes);
-            ctx->PathBytes = pathBytes;
-
-            /* 标记 pending（驱动卸载时等待） */
-            InjectPendingBegin();
-
-            ExInitializeWorkItem(&ctx->WorkItem, InjectApcWorkItemRoutine, ctx);
-            ExQueueWorkItem(&ctx->WorkItem, DelayedWorkQueue);
-        }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        if (ctx)
-        {
-            ExFreePool(ctx);
-            ctx = NULL;
-        }
-        /* 排队失败，回滚 pending 计数 */
-        InjectPendingEnd();
-    }
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
- * InjectApcWorkItemRoutine — 远程线程注入 work item 例程（挂起-注入-恢复方案）
- *
- * 改进方案（参考 R3 递归注入思路，内核态实现）：
- *   1. 挂起目标进程所有线程（阻止主线程继续执行，避免竞争 LoaderLock）
- *   2. 等待一小段时间（300ms），让被挂起前正在执行的 LdrpLoadDll 完成
- *   3. 在目标进程分配内存并写入 DLL 路径
- *   4. 创建远程线程执行 LoadLibraryW 加载防御 DLL
- *   5. 等待远程线程完成（LoadLibraryW 返回）
- *   6. 恢复目标进程所有线程
- *
- * 相比单纯延迟方案的优势：
- *   - 挂起后主线程不会继续持有 LoaderLock，远程线程能安全获取 LoaderLock
- *   - 无需猜测延迟时间，等待远程线程完成后才恢复，确保注入完成
- *   - 避免"连接到系统上的设备没有发挥作用"错误
- * ══════════════════════════════════════════════════════════════════════════ */
-
-/* RtlCreateUserThread 函数指针类型 */
-typedef NTSTATUS (NTAPI *PFN_RtlCreateUserThread)(
-    _In_ HANDLE ProcessHandle,
-    _In_opt_ PSECURITY_DESCRIPTOR SecurityDescriptor,
-    _In_ BOOLEAN CreateSuspended,
-    _In_ ULONG StackZeroBits,
-    _In_opt_ SIZE_T StackReserved,
-    _In_opt_ SIZE_T StackCommit,
-    _In_ PVOID StartAddress,
-    _In_opt_ PVOID StartParameter,
-    _Out_opt_ PHANDLE ThreadHandle,
-    _Out_opt_ PCLIENT_ID ClientId);
-
-static VOID InjectApcWorkItemRoutine(PVOID Context)
-{
-    PINJECT_APC_CTX ctx = (PINJECT_APC_CTX)Context;
-    PEPROCESS targetProcess = NULL;
-    PVOID remoteDllPath = NULL;
-    SIZE_T remotePathBytes = 0;
-    NTSTATUS status = STATUS_UNSUCCESSFUL;
-    NTSTATUS suspendStatus = STATUS_UNSUCCESSFUL;
-    HANDLE hProcess = NULL;
-    HANDLE hThread = NULL;
-    PFN_RtlCreateUserThread pfnRtlCreateUserThread = NULL;
-    KAPC_STATE apcState;
-    BOOLEAN attached = FALSE;
-
-    if (!ctx)
-    {
-        InjectPendingEnd();
-        return;
-    }
-
-    __try
-    {
-        /* 动态获取 RtlCreateUserThread 地址 */
-        {
-            UNICODE_STRING ustrRtlCreateUserThread;
-            RtlInitUnicodeString(&ustrRtlCreateUserThread, L"RtlCreateUserThread");
-            pfnRtlCreateUserThread =
-                (PFN_RtlCreateUserThread)MmGetSystemRoutineAddress(&ustrRtlCreateUserThread);
-            if (!pfnRtlCreateUserThread)
-            {
-                DriverDbgPrint("[INJECT-APC] RtlCreateUserThread not found\n");
-                goto cleanup;
-            }
-        }
-
-        /* 通过 PID 查找目标进程 */
-        status = PsLookupProcessByProcessId(ctx->ProcessId, &targetProcess);
-        if (!NT_SUCCESS(status) || !targetProcess)
-        {
-            DriverDbgPrint("[INJECT-APC] PsLookupProcessByProcessId failed PID=%lld: 0x%X\n",
-                (INT64)(ULONG_PTR)ctx->ProcessId, status);
-            goto cleanup;
-        }
-
-        /* ── 步骤0：挂起目标进程（必须在分配内存之前）
-         *
-         * 消除攻击窗口：原方案在 kernel32.dll 映射时异步排队 work item，
-         * 远程线程的 LoadLibraryW 等待 LoaderLock，但 work item 执行时
-         * 主线程可能已继续执行用户代码（恶意代码）。
-         *
-         * 挂起-注入-恢复方案：
-         *   1. PsSuspendProcess 挂起目标进程所有用户线程（阻止执行恶意代码）
-         *   2. ObOpenObjectByPointer + 分配内存 + 创建远程线程
-         *      （系统线程不受 PsSuspendProcess 影响，可安全操作）
-         *   3. 等待远程线程完成 LoadLibraryW
-         *   4. PsResumeProcess 恢复目标进程
-         *
-         * 注意：必须在分配内存之前挂起，避免主线程执行干扰注入。
-         * PsSuspendProcess 只挂起用户线程，系统线程（work item）不受影响。 */
-        suspendStatus = SuspendProcessByPid((INT64)(ULONG_PTR)ctx->ProcessId);
-        if (!NT_SUCCESS(suspendStatus))
-        {
-            DriverDbgPrint("[INJECT-APC] SuspendProcess failed PID=%lld: 0x%X (proceed without suspend)\n",
-                (INT64)(ULONG_PTR)ctx->ProcessId, suspendStatus);
-        }
-
-        /* ── 步骤1：打开目标进程句柄（必须在分配内存之前）── */
-        status = ObOpenObjectByPointer(
-            targetProcess,
-            OBJ_KERNEL_HANDLE,
-            NULL,
-            0x0008 | 0x0020 | 0x0010 |  /* PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ */
-            0x0002 | 0x0400,           /* PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION */
-            *PsProcessType,
-            KernelMode,
-            &hProcess);
-        if (!NT_SUCCESS(status) || !hProcess)
-        {
-            DriverDbgPrint("[INJECT-APC] ObOpenObjectByPointer failed PID=%lld: 0x%X\n",
-                (INT64)(ULONG_PTR)ctx->ProcessId, status);
-            goto cleanup;
-        }
-
-        /* ── 步骤2：在目标进程中分配内存并写入 DLL 路径 ──
-         * 参考 inject_way.txt：使用 hProcess 而非 ZwCurrentProcess()，
-         * 确保操作的是目标进程地址空间而非当前驱动进程。
-         * WoW64 进程：ZeroBits=32 强制分配地址 <2GB（32位可寻址范围）。 */
-        remotePathBytes = ctx->PathBytes;
-        {
-            ULONG zeroBits = ctx->Is64Bit ? 0 : 32;
-            status = ZwAllocateVirtualMemory(
-                hProcess,
-                &remoteDllPath,
-                zeroBits,
-                &remotePathBytes,
-                MEM_RESERVE | MEM_COMMIT,
-                PAGE_READWRITE);
-            if (!NT_SUCCESS(status) || !remoteDllPath)
-            {
-                DriverDbgPrint("[INJECT-APC] ZwAllocateVirtualMemory failed PID=%lld: 0x%X\n",
-                    (INT64)(ULONG_PTR)ctx->ProcessId, status);
-                goto cleanup;
-            }
-        }
-
-        /* ── 步骤2b：附加到目标进程地址空间后写入 DLL 路径 ──
-         * ZwAllocateVirtualMemory 返回的是目标进程用户空间地址，
-         * 工作线程运行在 System 进程上下文，必须 KeStackAttachProcess
-         * 切换到目标进程地址空间后才能用 RtlCopyMemory 写入，
-         * 否则页表不匹配 → MEMORY_MANAGEMENT 蓝屏 */
-        KeStackAttachProcess(targetProcess, &apcState);
-        attached = TRUE;
-        __try
-        {
-            RtlCopyMemory(remoteDllPath, ctx->DllPath, ctx->PathBytes);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            DriverDbgPrint("[INJECT-APC] RtlCopyMemory exception PID=%lld\n",
-                (INT64)(ULONG_PTR)ctx->ProcessId);
-            KeUnstackDetachProcess(&apcState);
-            attached = FALSE;
-            goto cleanup;
-        }
-        KeUnstackDetachProcess(&apcState);
-        attached = FALSE;
-
-        /* 收紧内存权限为只读，减少攻击面 */
-        {
-            ULONG oldProtect = 0;
-            SIZE_T protectSize = remotePathBytes;
-            ZwProtectVirtualMemory(hProcess, &remoteDllPath, &protectSize, PAGE_READONLY, &oldProtect);
-        }
-
-        /* 创建远程线程（挂起进程方案，消除攻击窗口）
-         *
-         * 原方案的致命缺陷：
-         *   - LoadImageNotifyRoutine 在 kernel32.dll 映射时触发，work item 异步排队
-         *   - 远程线程的 LoadLibraryW 等待 LoaderLock，但主线程在两次 DLL 加载间
-         *     会释放并重新获取 LoaderLock，远程线程可能在间隙获取锁
-         *   - 更严重的是：work item 执行时主线程可能已继续执行用户代码（恶意代码）
-         *   - 注释假设"防御 DLL 在主线程继续执行用户代码前加载完成"是错误的
-         *
-         * 正确方案（挂起-注入-恢复，已在步骤0挂起进程）：
-         *   1. PsSuspendProcess 挂起目标进程所有用户线程（阻止执行恶意代码）
-         *   2. 创建远程线程执行 LoadLibraryW（主线程被挂起，不持有 LoaderLock）
-         *   3. 等待远程线程完成（LoadLibraryW 返回，防御 DLL 已加载）
-         *   4. PsResumeProcess 恢复目标进程
-         *
-         * 这样确保防御 DLL 在主线程执行任何用户代码前加载完成，无攻击窗口。 */
-
-        /* ── 步骤3：创建远程线程执行 LoadLibraryW ──
-         * StackZeroBits: 32位进程用32（地址<2GB），64位进程用0（不限制）。
-         * 与 ZwAllocateVirtualMemory 的 zeroBits 保持一致。
-         *
-         * WoW64 注入说明：
-         *   RtlCreateUserThread 在 WoW64 进程中创建线程时，线程初始化通过
-         *   64 位 ntdll!LdrInitializeThunk 完成，然后 CPU 自动切换到 32 位模式
-         *   (CS=0x23) 执行 StartAddress。因此 32 位 LoadLibraryW 地址可直接使用。
-         *   StackZeroBits=32 确保线程栈分配在 <4GB 地址空间。
-         *
-         * 32 位注入失败的常见原因：
-         *   1. g_Kernel32LoadLibraryW32 未被缓存（kernelbase.dll 32位未先加载）
-         *   2. ZwAllocateVirtualMemory 的 remoteDllPath 地址 > 4GB（zeroBits 未生效）
-         *   3. DLL 路径字符串在跨地址空间写入时损坏 */
-        {
-            ULONG zeroBits = ctx->Is64Bit ? 0 : 32;
-
-            DriverDbgPrint("[INJECT-APC] Creating remote thread: PID=%lld is64Bit=%d LoadLibraryW=0x%p remotePath=0x%p zeroBits=%lu\n",
-                (INT64)(ULONG_PTR)ctx->ProcessId, ctx->Is64Bit, ctx->LoadLibraryW, remoteDllPath, zeroBits);
-
-            status = pfnRtlCreateUserThread(
-                hProcess,
-                NULL,
-                FALSE,          /* 不以挂起状态创建，立即执行 */
-                zeroBits,
-                0,
-                0,
-                ctx->LoadLibraryW,
-                remoteDllPath,
-                &hThread,
-                NULL);
-        }
-
-        if (!NT_SUCCESS(status))
-        {
-            DriverDbgPrint("[INJECT-APC] RtlCreateUserThread failed PID=%lld: 0x%X\n",
-                (INT64)(ULONG_PTR)ctx->ProcessId, status);
-            {
-                CHAR injectLogMsg[300];
-                RtlStringCbPrintfA(injectLogMsg, sizeof(injectLogMsg),
-                    "[注入防护-注入失败] 远程线程创建失败: PID=%lld 状态=0x%X",
-                    (INT64)(ULONG_PTR)ctx->ProcessId, status);
-                SendInjectionLog(injectLogMsg);
-            }
-            /* 进程恢复由 cleanup 统一处理 */
-            goto cleanup;
-        }
-
-        /* ── 步骤4：等待远程线程完成（LoadLibraryW 返回） ──
-         * 主线程被挂起，远程线程能立即获取 LoaderLock 执行 LoadLibraryW。
-         * 等待远程线程结束，确保防御 DLL 已加载。
-         * 使用 10 秒超时兜底，防止异常情况下永久阻塞。
-         * 进程恢复统一在 cleanup 中处理，避免遗漏。 */
-        if (hThread)
-        {
-            LARGE_INTEGER timeout;
-            timeout.QuadPart = -10 * 10000000LL;  /* 10 秒（负值=相对时间） */
-            ZwWaitForSingleObject(hThread, FALSE, &timeout);
-        }
-
-        DriverDbgPrint("[INJECT-APC] Remote thread completed PID=%lld\n",
-            (INT64)(ULONG_PTR)ctx->ProcessId);
-
-        /* 远程内存由目标进程自行管理，不释放 */
-        remoteDllPath = NULL;
-        remotePathBytes = 0;
-
-cleanup:
-        /* 安全兜底：确保异常跳转路径下已 detach，否则 KeStackAttachProcess
-         * 未配对 detach 会导致线程地址空间永久错乱 → 蓝屏 */
-        if (attached)
-        {
-            KeUnstackDetachProcess(&apcState);
-            attached = FALSE;
-        }
-        if (hThread)
-        {
-            ZwClose(hThread);
-            hThread = NULL;
-        }
-        if (hProcess)
-        {
-            /* ObOpenObjectByPointer 获取的内核句柄必须在此关闭，
-             * 无论注入成功或失败，否则会导致内核句柄泄漏（池损坏→蓝屏） */
-            ZwClose(hProcess);
-            hProcess = NULL;
-        }
-
-        /* 恢复目标进程（确保任何退出路径都恢复，避免进程永久挂起） */
-        if (NT_SUCCESS(suspendStatus))
-        {
-            ResumeProcessByPid((INT64)(ULONG_PTR)ctx->ProcessId);
-        }
-
-        if (targetProcess)
-        {
-            ObDereferenceObject(targetProcess);
-        }
-        ExFreePool(ctx);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        DriverDbgPrint("[INJECT-APC] Exception in InjectApcWorkItemRoutine PID=%lld\n",
-            ctx ? (INT64)(ULONG_PTR)ctx->ProcessId : -1);
-
-        if (attached)
-        {
-            KeUnstackDetachProcess(&apcState);
-            attached = FALSE;
-        }
-        if (hThread)
-        {
-            ZwClose(hThread);
-        }
-        if (hProcess)
-        {
-            ZwClose(hProcess);
-        }
-        /* 异常路径也恢复进程，避免永久挂起 */
-        if (ctx && NT_SUCCESS(suspendStatus))
-        {
-            ResumeProcessByPid((INT64)(ULONG_PTR)ctx->ProcessId);
-        }
-        if (targetProcess)
-        {
-            ObDereferenceObject(targetProcess);
-        }
-        if (ctx)
-        {
-            ExFreePool(ctx);
-        }
-    }
-
-    /* 标记 pending 结束（驱动卸载等待此信号） */
-    InjectPendingEnd();
+    /* ── DLL 注入：调用 DriverDllInject（参考 injdrv: https://github.com/wbenny/injdrv）──
+     * 使用 kernel APC + thunk/thunkless 方案，
+     * 在 ntdll.dll 加载后触发，避免 LoaderLock 竞争和死锁。 */
+    DriverDllInjectLoadImageNotifyRoutine(FullImageName, ProcessId, ImageInfo);
 }
 
 /* ============================================================================
@@ -2977,6 +2359,7 @@ typedef struct _DLL_SCAN_WORKITEM_CTX {
     WCHAR dllPath[520];
     CHAR processPath[512];
     BOOLEAN blocking;
+    BOOLEAN isSideLoad;
 } DLL_SCAN_WORKITEM_CTX, *PDLL_SCAN_WORKITEM_CTX;
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -3032,6 +2415,7 @@ static VOID DllScanWorkItemRoutine(PVOID Context)
                 RtlStringCbCopyA(request->DllPath, sizeof(request->DllPath), dllPathA);
                 RtlStringCbCopyA(request->RuleDesc, sizeof(request->RuleDesc),
                     "UnsignedDllScan-Async");
+                request->IsSideLoad = ctx->isSideLoad ? 1 : 0;
 
                 KeAcquireInStackQueuedSpinLock(&g_RequestQueueLock, &lockHandle);
                 lockHeld = TRUE;
@@ -3147,6 +2531,7 @@ static VOID DllScanWorkItemRoutine(PVOID Context)
                     ctx->processPath ? ctx->processPath : "");
                 RtlStringCbCopyA(request->DllPath, sizeof(request->DllPath), dllPathA);
                 RtlStringCbCopyA(request->RuleDesc, sizeof(request->RuleDesc), "UnsignedDllScan-Blocking");
+                request->IsSideLoad = ctx->isSideLoad ? 1 : 0;
 
                 KeAcquireInStackQueuedSpinLock(&g_RequestQueueLock, &lockHandle);
                 lockHeld = TRUE;
@@ -3261,7 +2646,8 @@ VOID QueueDllScanWorkItem(
     INT64 pid,
     const WCHAR* dllPath,
     const CHAR* processPath,
-    BOOLEAN blocking)
+    BOOLEAN blocking,
+    BOOLEAN isSideLoad)
 {
     PDLL_SCAN_WORKITEM_CTX ctx = (PDLL_SCAN_WORKITEM_CTX)ExAllocatePool2(
         POOL_FLAG_NON_PAGED, sizeof(DLL_SCAN_WORKITEM_CTX), 'DlSW');
@@ -3278,6 +2664,7 @@ VOID QueueDllScanWorkItem(
     RtlZeroMemory(ctx, sizeof(DLL_SCAN_WORKITEM_CTX));
     ctx->pid = pid;
     ctx->blocking = blocking ? TRUE : FALSE;
+    ctx->isSideLoad = isSideLoad ? TRUE : FALSE;
     if (dllPath)
     {
         int i;
@@ -3316,10 +2703,6 @@ VOID NtdllTrackInitialize(VOID)
     g_NtdllReloadEventSequence = 0;
     DriverDbgPrint("[NTDLL-TRACK] Ntdll tracking initialized (max %d entries)\n",
         NTDLL_MAX_TRACKED_PROCESSES);
-
-    /* 初始化注入去重表 */
-    KeInitializeSpinLock(&g_InjectedPidsLock);
-    RtlZeroMemory(g_InjectedPids, sizeof(g_InjectedPids));
 }
 
 /* 清理 ntdll 追踪上下文 */
@@ -3838,4 +3221,46 @@ static BOOLEAN IsKernel32Image(_In_ PUNICODE_STRING FullImageName)
     tailStr.MaximumLength = ksLen;
 
     return RtlEqualUnicodeString(&ksName, &tailStr, TRUE);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * VdTerminateProcessByPid — 漏洞驱动拦截专用进程终止入口
+ *
+ * 复用 TerminateProcessByPid 的内核句柄 + BreakOnTermination 保护逻辑。
+ * 供 VulnerableDriver.c 在检测到漏洞驱动加载时终止发起加载的进程。
+ * 仅在 PASSIVE_LEVEL 调用。
+ * ═══════════════════════════════════════════════════════════════════════════ */
+NTSTATUS VdTerminateProcessByPid(INT64 pid)
+{
+    PEPROCESS process;
+    NTSTATUS status;
+
+    if (pid <= 4)
+        return STATUS_SUCCESS;
+
+    status = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)pid, &process);
+    if (!NT_SUCCESS(status))
+        return status;
+
+    /* 关键系统进程保护：绝不终止已知关键进程 */
+    if (IsCriticalSystemProcess(process)) {
+        DriverDbgPrint("[VULN-DRIVER] Terminate SKIPPED critical process PID=%lld\n", pid);
+        ObDereferenceObject(process);
+        return STATUS_SUCCESS;
+    }
+
+    HANDLE hProcess = NULL;
+    status = ObOpenObjectByPointer(process, OBJ_KERNEL_HANDLE, NULL,
+        0x0001 | 0x0400, /* PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION */
+        *PsProcessType, KernelMode, &hProcess);
+    if (NT_SUCCESS(status) && hProcess) {
+        if (QueryProcessCritical(hProcess)) {
+            DriverDbgPrint("[VULN-DRIVER] PID=%lld has BreakOnTermination, skip termination\n", pid);
+        } else if (g_pfnNtTerminateProcess) {
+            g_pfnNtTerminateProcess(hProcess, STATUS_ACCESS_DENIED);
+        }
+        ZwClose(hProcess);
+    }
+    ObDereferenceObject(process);
+    return STATUS_SUCCESS;
 }

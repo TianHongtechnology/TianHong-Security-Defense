@@ -1098,6 +1098,13 @@ string Scan_GeneralScan(string FilePath, string thisSha256);
 std::string Scan_ScriptSandbox(const std::string& filePath);
 
 /**
+ * @brief 对脚本文件进行 BatchScan（ScriptDetectionEngine）静态检测
+ * @param filePath 要扫描的脚本文件路径
+ * @return std::string 返回检测结果字符串，Empty 表示清洁
+ */
+std::string Scan_ScriptBatch(const std::string& filePath);
+
+/**
  * @brief 将宽字符串（LPWSTR）转换为ANSI字符串（LPSTR）
  * @param lpwszStrIn 输入的宽字符串
  * @return string 返回转换后的ANSI字符串
@@ -1220,8 +1227,16 @@ void Log_AddLogEx(QString Summary, QString Detail, LogLevel level = LOG_INFO, QS
 // 新接口：带日志等级 + 提供者（无详情，摘要即详情）
 void Log_AddLogSimple(QString Summary, LogLevel level = LOG_INFO, QString Provider = QString());
 
+// ==================== 威胁回滚（磁盘记录持久化 + 合并弹窗 + 用户态执行）====================
+// 驱动 g_baDroppedFiles/g_baRegOps 环形缓冲区溢出时，将覆盖前的有效记录以
+// BA_ROLLBACK_LOG_RECORD 形式上报，主程序持久化到磁盘缓存（300MB 上限）。
+// 回滚时结合驱动当前 BA_ROLLBACK_LIST 与磁盘中的回滚记录一起执行。
+void BehaviorCacheAppendRollbackRecord(const BA_ROLLBACK_LOG_RECORD& rec);
+
 // ==================== 威胁回滚确认弹窗（非阻塞 modeless）====================
 // 显示回滚项列表（文件+注册表），默认全选，用户选择回滚/忽略后通过 callback 返回选择结果。
+// 弹窗内部会合并驱动当前 BA_ROLLBACK_LIST 与磁盘缓存中的回滚记录；
+// 驱动当前 list 部分由驱动执行（通过 callback 返回 selection），磁盘记录部分由主程序执行。
 // callback 在主线程中调用，可安全发送 socket 响应。
 void ShowRollbackConfirmPopup(
     const BA_ROLLBACK_LIST* rollbackList,

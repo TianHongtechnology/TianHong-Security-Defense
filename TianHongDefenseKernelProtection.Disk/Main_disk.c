@@ -47,7 +47,6 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     /* 创建控制设备和符号链接 */
     status = DiskFilterCreateDevice(DriverObject);
     if (!NT_SUCCESS(status)) {
-        DiskDbgPrint("Failed to create control device: 0x%X\n", status);
         return status;
     }
 
@@ -59,7 +58,6 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     /* 初始化磁盘过滤（附加到物理磁盘设备栈） */
     status = FileFilterInitialize(DriverObject);
     if (!NT_SUCCESS(status)) {
-        DiskDbgPrint("Failed to initialize disk filter: 0x%X\n", status);
         /* 清理已创建的控制设备 */
         UNICODE_STRING symLink;
         RtlInitUnicodeString(&symLink, DISK_SYMLINK_NAME);

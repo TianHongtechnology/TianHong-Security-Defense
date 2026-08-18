@@ -282,7 +282,8 @@ typedef enum _RULE_TYPE {
     RULE_TYPE_DLL_SCAN,        // 签名程序加载未签名 DLL 检查
     RULE_TYPE_NTDLL_RELOAD,    // ntdll.dll 重载/Unhook 检测事件
     RULE_TYPE_DCOM_LATERAL_MOVEMENT,  // DCOM 横向移动检测
-    RULE_TYPE_ROLLBACK_CONFIRM       // 威胁回滚确认（用户选择回滚/忽略）
+    RULE_TYPE_ROLLBACK_CONFIRM,       // 威胁回滚确认（用户选择回滚/忽略）
+    RULE_TYPE_ROLLBACK_LOG            // 回滚记录日志（溢出丢磁盘，主程序持久化）
 } RULE_TYPE;
 
 typedef enum _PACKET_TYPE {
@@ -411,11 +412,33 @@ typedef struct _BA_ROLLBACK_SELECTION {
     INT32   itemCount;
     UINT8   selected[BA_MAX_ROLLBACK_ITEMS];  // 1=selected for rollback
 } BA_ROLLBACK_SELECTION;
+
+// -- Rollback log record (kernel overflow -> client -> main 磁盘缓存) --
+// 自包含的回滚记录：文件=待删除路径；注册表=键路径+值名+原始值备份。
+// 驱动 g_baDroppedFiles / g_baRegOps 环形缓冲区溢出时，将覆盖前的记录
+// 以本结构上报到用户态，主程序持久化到行为磁盘缓存（300MB 上限），
+// 回滚时结合驱动当前 BA_ROLLBACK_LIST 一起执行。
+#define BA_RBLOG_PATH_LEN      180
+#define BA_RBLOG_VALUE_NAME_LEN 32
+#define BA_RBLOG_BACKUP_LEN    1024
+
+typedef struct _BA_ROLLBACK_LOG_RECORD {
+    UINT8   type;              // 0=file, 1=registry
+    INT64   pid;               // process that performed the operation
+    CHAR    path[BA_RBLOG_PATH_LEN];        // file path or registry key path
+    CHAR    valueName[BA_RBLOG_VALUE_NAME_LEN]; // registry value name (empty for files)
+    UINT8   regOp;             // 0=SetValue, 1=DeleteValue (for registry only)
+    UINT8   hadExisting;       // whether original value existed (for registry only)
+    UINT32  originalType;      // original value type REG_DWORD/REG_SZ...
+    UINT32  originalDataLen;   // original value data bytes
+    UINT8   originalData[BA_RBLOG_BACKUP_LEN]; // original value backup data
+} BA_ROLLBACK_LOG_RECORD;
 #pragma pack(pop)
 
 typedef BA_ROLLBACK_ITEM* PBA_ROLLBACK_ITEM;
 typedef BA_ROLLBACK_LIST* PBA_ROLLBACK_LIST;
 typedef BA_ROLLBACK_SELECTION* PBA_ROLLBACK_SELECTION;
+typedef BA_ROLLBACK_LOG_RECORD* PBA_ROLLBACK_LOG_RECORD;
 #endif /* _BA_ROLLBACK_STRUCTS_DEFINED */
 
 // R0 whitelist sync (AutoAllowList / AutoPreventList from main.cpp)
@@ -448,6 +471,7 @@ typedef struct _COMM_RULE_DETECTED {
     CHAR            ProcessPath[512];   // triggering process image full path
     CHAR            DllPath[512];       // DLL path (for RULE_TYPE_DLL_SCAN)
     CHAR            RuleDesc[128];      // matched rule description
+    int             IsSideLoad;         // 1=同目录未签名DLL（进程签名已降级）
     /* Data 必须能容纳 RULE_REG_DETECTED_RESPONSE（9218 字节）和
      * RULE_FILE_DETECTED_RESPONSE（5409 字节）。原值 5120 不足，导致
      * GetPendingRequest 中 RtlZeroMemory 写入超出 Data 边界，溢出
@@ -553,6 +577,7 @@ typedef struct _RESPONSE_REQUEST {
     CHAR            ProcessPath[512];
     CHAR            DllPath[512];
     CHAR            RuleDesc[128];
+    int             IsSideLoad;       // 1=同目录未签名DLL（进程签名已降级）
     PUNICODE_STRING FullPath;
     PUNICODE_STRING ValueName;
     PVOID           NewValueData;
@@ -562,6 +587,7 @@ typedef struct _RESPONSE_REQUEST {
     INJECTION_LOG_DATA      InjectionLog;     // Injection log data
     PBA_ROLLBACK_LIST       RollbackList;     // Rollback item list (for RULE_TYPE_ROLLBACK_CONFIRM)
     BA_ROLLBACK_SELECTION   RollbackSelection; // User's rollback selection (filled by HandleUserResponse)
+    BA_ROLLBACK_LOG_RECORD  RollbackLogRec;    // 回滚记录（for RULE_TYPE_ROLLBACK_LOG，溢出丢磁盘）
     KEVENT          CompletionEvent;
     NTSTATUS        ResultStatus;
     BOOLEAN         FireAndForget;  // TRUE=fire-and-forget, freed by HandleUserResponse

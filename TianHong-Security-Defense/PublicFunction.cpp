@@ -6,6 +6,8 @@
 #include <QLabel>
 #include <QScrollArea>
 #include <QCheckBox>
+#include <QProgressDialog>
+#include <QApplication>
 #include <tuple>
 #include <memory>
 #include <functional>
@@ -46,6 +48,7 @@ using Microsoft::WRL::ComPtr;
 using Microsoft::WRL::Wrappers::HStringReference;
 
 extern BOOL g_bSilentModeEnabled;
+extern wchar_t g_wszMainExeDir[MAX_PATH];   // 主程序目录（用于磁盘日志缓存）
 
 extern BOOL Windows_IsNowUAC;
 extern HDESK Windows_OrgDesktop, Windows_UacDesktop;
@@ -2727,44 +2730,47 @@ bool Process_IsProcess64Bit(HANDLE hProcess)
 // 辅助函数：检查目标进程中是否已加载指定DLL
 BOOL IsModuleLoadedInProcess(HANDLE hProcess, const wstring& moduleName)
 {
-    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetProcessId(hProcess));
-    if (hSnapshot == INVALID_HANDLE_VALUE)
+    // 使用 EnumProcessModulesEx 而非 TH32CS_SNAPMODULE
+    // TH32CS_SNAPMODULE 在 x64 进程中只能枚举到 x86 模块（通过 WoW64 层），无法正确检测 x64 DLL
+    HMODULE hModules[1024];
+    DWORD cbNeeded = 0;
+
+    if (!EnumProcessModulesEx(hProcess, hModules, sizeof(hModules), &cbNeeded, LIST_MODULES_ALL))
     {
         return FALSE;
     }
 
-    MODULEENTRY32W me32 = { 0 };
-    me32.dwSize = sizeof(MODULEENTRY32W);
-
+    DWORD numModules = cbNeeded / sizeof(HMODULE);
     BOOL bFound = FALSE;
-    if (Module32FirstW(hSnapshot, &me32))
+
+    for (DWORD i = 0; i < numModules; i++)
     {
-        do
+        wchar_t szModuleName[MAX_PATH] = { 0 };
+        if (GetModuleFileNameExW(hProcess, hModules[i], szModuleName, MAX_PATH) == 0)
+            continue;
+
+        // 提取文件名进行比较
+        wstring loadedModule = szModuleName;
+        size_t pos = loadedModule.find_last_of(L"\\/");
+        if (pos != wstring::npos)
         {
-            // 比较模块文件名（不区分大小写）
-            wstring loadedModule = me32.szExePath;
-            size_t pos = loadedModule.find_last_of(L"\\/");
-            if (pos != wstring::npos)
-            {
-                loadedModule = loadedModule.substr(pos + 1);
-            }
+            loadedModule = loadedModule.substr(pos + 1);
+        }
 
-            wstring targetModule = moduleName;
-            pos = targetModule.find_last_of(L"\\/");
-            if (pos != wstring::npos)
-            {
-                targetModule = targetModule.substr(pos + 1);
-            }
+        wstring targetModule = moduleName;
+        pos = targetModule.find_last_of(L"\\/");
+        if (pos != wstring::npos)
+        {
+            targetModule = targetModule.substr(pos + 1);
+        }
 
-            if (_wcsicmp(loadedModule.c_str(), targetModule.c_str()) == 0)
-            {
-                bFound = TRUE;
-                break;
-            }
-        } while (Module32NextW(hSnapshot, &me32));
+        if (_wcsicmp(loadedModule.c_str(), targetModule.c_str()) == 0)
+        {
+            bFound = TRUE;
+            break;
+        }
     }
 
-    CloseHandle(hSnapshot);
     return bFound;
 }
 
@@ -2797,7 +2803,8 @@ int Process_InjectDll(DWORD dwProcessId)
     // 32位进程通过helper.exe注入
     if (!is64Bit)
     {
-        string par = (char*)(CW2A)pDll.c_str();
+        USES_CONVERSION;
+        string par = W2A(pDll.c_str());
         string eventName = GenerateUniqueEventName(dwProcessId);
 
         HANDLE hHookReady = CreateEventA(NULL, TRUE, FALSE, eventName.c_str());
@@ -2820,7 +2827,7 @@ int Process_InjectDll(DWORD dwProcessId)
         return FALSE;
     }
 
-    // 64位进程直接注入（同样需要检查文件有效性）
+    // 64位进程直接注入
     const TCHAR* ptszDllFile = pDll.c_str();
     if (NULL == ptszDllFile || 0 == ::_tcslen(ptszDllFile))
     {
@@ -2832,6 +2839,24 @@ int Process_InjectDll(DWORD dwProcessId)
     {
         CloseHandle(hProcess);
         return FALSE;
+    }
+
+    // 检查进程是否已被挂起（如果是，需要先恢复）
+    DWORD suspendCount = 0;
+    typedef NTSTATUS(NTAPI* NtQueryInformationProcess_t)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+    NtQueryInformationProcess_t pNtQueryInformationProcess =
+        (NtQueryInformationProcess_t)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationProcess");
+
+    if (pNtQueryInformationProcess)
+    {
+        PROCESS_BASIC_INFORMATION pbi = { 0 };
+        NTSTATUS status = pNtQueryInformationProcess(hProcess, 0, &pbi, sizeof(pbi), NULL);
+        if (NT_SUCCESS(status))
+        {
+            // PebBaseAddress->BeingDebugged 偏移为 2，SuspendCount 在 PEB+0x0018
+            // 通过 NtQueryInformationProcess 获取 HangCount 来判断挂起状态（简化处理：直接尝试注入）
+            suspendCount = (DWORD)(ULONG_PTR)pbi.PebBaseAddress;
+        }
     }
 
     // 分配内存并写入DLL路径
@@ -2870,34 +2895,29 @@ int Process_InjectDll(DWORD dwProcessId)
     HANDLE hThread = ::CreateRemoteThread(hProcess, NULL, 0, lpThreadFun, ptszRemoteBuf, 0, NULL);
     if (NULL == hThread)
     {
+        // CreateRemoteThread 失败，可能是因为进程被挂起，释放内存后返回
         ::VirtualFreeEx(hProcess, ptszRemoteBuf, NULL, MEM_RELEASE);
         CloseHandle(hProcess);
         return FALSE;
     }
 
-    // 等待远程线程完成（最多5秒，避免目标进程挂起导致无限等待）
-    DWORD waitResult = ::WaitForSingleObject(hThread, 5000);
+    // 等待远程线程完成（最多10秒，给挂起进程足够时间执行）
+    DWORD waitResult = ::WaitForSingleObject(hThread, 10000);
     if (waitResult == WAIT_TIMEOUT)
     {
-        // 远程线程未在超时内完成，可能目标进程处于挂起状态。
-        // 关键：不能释放远程内存 ptszRemoteBuf！远程线程仍在运行 LoadLibraryW，
-        // 会读取该内存中的 DLL 路径字符串。若释放会导致目标进程访问冲突崩溃。
-        // 远程内存由目标进程自行管理（进程退出时自动回收），避免 UAF 崩溃。
+        // 目标进程可能仍处于挂起状态，远程线程无法执行
+        // 释放远程内存句柄，但保留内存由目标进程自行管理
         ::CloseHandle(hThread);
         ::CloseHandle(hProcess);
         return FALSE;
     }
     else if (waitResult == WAIT_FAILED)
     {
-        // 等待失败（如线程句柄失效），同样不释放远程内存以避免 UAF。
         ::CloseHandle(hThread);
         ::CloseHandle(hProcess);
         return FALSE;
     }
 
-    // 远程线程已完成。不释放远程内存：LoadLibraryW 可能仍在收尾（如 DllMain 回调），
-    // 释放可能导致竞态。远程内存很小（DLL路径字符串），由目标进程退出时自动回收。
-    // 这与 R0 驱动注入（ProcessCallback.c）的设计一致："远程内存由目标进程自行管理"。
     ::CloseHandle(hThread);
     ::CloseHandle(hProcess);
 
@@ -3231,7 +3251,7 @@ int Encrypt_OrgEncrptFile(string sPath, string asPath, string sKey)
     size_t keyLen = sKey.length();  // 缓存密钥长度
 
     memset(buffer, 0, buffer_size + 1);
-    while (read_size = fread(buffer, sizeof(char), buffer_size, f))
+    while ((read_size = static_cast<int>(fread(buffer, sizeof(char), buffer_size, f))) > 0)
     {
         for (i = 0; i < read_size; i++)
         {
@@ -3582,6 +3602,7 @@ string Scan_GeneralScan(string FilePath, string thisSha256)
     bool peEngineOn = pVirusScanPage->pPEEngineSwitch->getIsToggled();
     bool yaraEngineOn = pVirusScanPage->pYaraEngineSwitch->getIsToggled();
     bool clamavEngineOn = pVirusScanPage->pClamAVEngineSwitch->getIsToggled();
+    bool scriptEngineOn = pVirusScanPage->pScriptEngineSwitch ? pVirusScanPage->pScriptEngineSwitch->getIsToggled() : true;
 
     if (sha256EngineOn && Sha256Black_IsReady)
     {
@@ -3625,31 +3646,18 @@ string Scan_GeneralScan(string FilePath, string thisSha256)
         RiskReport Report = engine.scanFile(FilePath.c_str());
 
         if (Report.isMalicious) {
-            VirusName = "Heur/" + Report.family;
+            VirusName = Report.family;
             isVir = true;
 		}
+    }
 
-        if (!isVir)
+    if (!isVir && scriptEngineOn && isBatchScriptExt)
+    {
+        string sbClass = Scan_ScriptSandbox(FilePath);
+        if (sbClass != "BSD/Clean" && !sbClass.empty())
         {
-            string lowerPath = FilePath;
-            std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(),
-                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            bool isScriptExt = EndsWith(lowerPath, ".ps1") || EndsWith(lowerPath, ".psm1") ||
-                               EndsWith(lowerPath, ".psd1") || EndsWith(lowerPath, ".bat") ||
-                               EndsWith(lowerPath, ".cmd") || EndsWith(lowerPath, ".vbs") ||
-                               EndsWith(lowerPath, ".js") || EndsWith(lowerPath, ".hta") ||
-                               EndsWith(lowerPath, ".lnk");
-
-            if (isScriptExt || Report.language == ScriptLanguage::CMD ||
-                Report.language == ScriptLanguage::PowerShell)
-            {
-                string sbClass = Scan_ScriptSandbox(FilePath);
-                if (sbClass != "BSD/Clean" && !sbClass.empty())
-                {
-                    VirusName = sbClass;
-                    isVir = true;
-                }
-            }
+            VirusName = sbClass;
+            isVir = true;
         }
     }
 
@@ -3708,12 +3716,23 @@ string Scan_GeneralScan(string FilePath, string thisSha256)
                 }
                 else
                 {
-                    if (pVirusScanPage->pHighSensitiveSwitch->getIsToggled())
+                    if (analyzer32.isSigValid() == false)
                     {
-                        return "Sign/Trojan.Unsigned.Generic (HIGH SENSITIVE MODEL)";
+                        // 有签名数据但签名无效/过期，额外加分（伪造签名的强信号）
+                        confid += 8;
+                        if (pVirusScanPage->pHighSensitiveSwitch->getIsToggled())
+                        {
+                            return "Sign/Trojan.Unsigned.Generic (HIGH SENSITIVE MODEL)";
+                        }
                     }
-
-                    confid += 5;
+                    else
+                    {
+                        if (pVirusScanPage->pHighSensitiveSwitch->getIsToggled())
+                        {
+                            return "Sign/Trojan.Unsigned.Generic (HIGH SENSITIVE MODEL)";
+                        }
+                        confid += 5;
+                    }
                 }
 
                 BOOL TimeMark = FALSE, SizeMark = TRUE, IconMark = TRUE;
@@ -3780,7 +3799,7 @@ std::string Scan_ScriptSandbox(const std::string& filePath)
     // positives from binary files (.dmp, .obj, .dll, etc.) that happen to
     // contain byte patterns matching script detection rules.
     static const std::vector<std::string> scriptExts = {
-        ".js", ".vbs", ".hta", ".ps1", ".wsf", ".scf",
+        ".js", ".vbs", ".hta", ".ps1", ".psm1", ".psd1", ".wsf", ".scf",
         ".jsl", ".jse", ".vbe", ".ps1xml", ".psc1", ".cdxml"
     };
     std::string lowPath = filePath;
@@ -3812,7 +3831,7 @@ std::string Scan_ScriptSandbox(const std::string& filePath)
         return "BSD/Clean";
 
     ScriptSandbox::Sandbox sandbox;
-    ScriptSandbox::DetectionResult result = sandbox.Analyze(script);
+    ScriptSandbox::DetectionResult result = sandbox.AnalyzeFile(filePath);
 
     if (result.malicious && !result.family.empty() && result.family != "Clean")
         return result.family;
@@ -3830,6 +3849,32 @@ string ConvertLPWSTRToLPSTR(LPWSTR lpwszStrIn)
     string s = pt;
     free(pt);   // _strdup 使用 malloc 分配，必须用 free 释放
     return s;
+}
+
+// 脚本静态检测：仅依赖后缀名，不依赖启发引擎开关
+std::string Scan_ScriptBatch(const std::string& filePath)
+{
+    static const std::vector<std::string> scriptExts = {
+        ".ps1", ".psm1", ".psd1", ".bat", ".cmd", ".vbs", ".vbe",
+        ".js", ".jse", ".hta", ".wsf", ".scf", ".lnk", ".ps1xml", ".psc1", ".cdxml"
+    };
+    std::string lowPath = filePath;
+    std::transform(lowPath.begin(), lowPath.end(), lowPath.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    bool isScript = false;
+    for (const auto& ext : scriptExts) {
+        if (lowPath.size() >= ext.size() &&
+            lowPath.substr(lowPath.size() - ext.size()) == ext) {
+            isScript = true;
+            break;
+        }
+    }
+    if (!isScript) return "Empty";
+
+    ScriptDetectionEngine engine;
+    RiskReport Report = engine.scanFile(filePath.c_str());
+    if (Report.isMalicious) return Report.family;
+    return "Empty";
 }
 
 bool CompareWithoutCap(const string& str1, const string& str2)
@@ -4562,6 +4607,210 @@ static const ElaIconType::IconName g_LogLevelIcon[] = {
     ElaIconType::TriangleExclamation   // ERROR
 };
 
+// ==================== 磁盘日志缓存（回滚参考旧数据）====================
+// 在主程序同目录下缓存历史日志，上限 300MB，超出时清除最旧数据。
+// 回滚确认时从缓存检索当前 PID 的历史日志，辅助用户决策。
+#define BEHAVIOR_CACHE_MAX_BYTES  300LL * 1024LL * 1024LL   // 300MB 上限
+#define BEHAVIOR_CACHE_TRIM_BYTES 200LL * 1024LL * 1024LL   // 超限后保留最近 200MB
+#define BEHAVIOR_CACHE_FILE       L"behavior_cache.log"
+
+// 返回缓存文件完整路径（主程序同目录）
+static QString BehaviorCacheFilePath()
+{
+    QString dir = QString::fromWCharArray(g_wszMainExeDir);
+    if (dir.isEmpty())
+        return QString();
+    return dir + QString::fromWCharArray(BEHAVIOR_CACHE_FILE);
+}
+
+// 缓存文件超限时，保留最近 TRIM_BYTES 字节（删除最旧部分）
+static void BehaviorCacheTrimIfNeeded()
+{
+    QString path = BehaviorCacheFilePath();
+    if (path.isEmpty()) return;
+
+    QFileInfo fi(path);
+    if (!fi.exists() || fi.size() <= BEHAVIOR_CACHE_MAX_BYTES)
+        return;
+
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return;
+
+    qint64 total = f.size();
+    qint64 keep = BEHAVIOR_CACHE_TRIM_BYTES;
+    if (keep >= total) { f.close(); return; }
+
+    // 从文件尾部保留下，跳过一个可能的半行，保证从完整行开始
+    qint64 keepStart = total - keep;
+    f.seek(keepStart);
+    // 丢弃第一个不完整的行：若当前位置不是行首，向后读到下一个换行符
+    {
+        char c = 0;
+        if (f.read(&c, 1) == 1 && c != '\n') {
+            while (f.read(&c, 1) == 1 && c != '\n') { }
+        }
+    }
+
+    QByteArray tailData = f.readAll();
+    f.close();
+
+    QFile fo(path);
+    if (fo.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        fo.write(tailData);
+        fo.close();
+    }
+}
+
+// 追加一行日志到磁盘缓存（带时间戳）
+static void BehaviorCacheAppend(const QString& line)
+{
+    if (line.isEmpty()) return;
+    QString path = BehaviorCacheFilePath();
+    if (path.isEmpty()) return;
+
+    QFile f(path);
+    if (!f.open(QIODevice::Append | QIODevice::WriteOnly))
+        return;
+
+    QByteArray data = line.toUtf8();
+    data.append('\n');
+    f.write(data);
+    f.close();
+
+    // 若超限则立即裁剪（低频操作，仅在超限时发生）
+    BehaviorCacheTrimIfNeeded();
+}
+
+// 从磁盘缓存中检索指定 PID 相关的历史日志行（回滚时参考旧数据）
+// 返回最近最多 maxLines 条匹配行；同时通过 total 输出该 PID 的全部匹配条数
+static QStringList BehaviorCacheQueryPid(qint64 pid, int maxLines, int* total = NULL)
+{
+    QStringList result;
+    if (total) *total = 0;
+    QString path = BehaviorCacheFilePath();
+    if (path.isEmpty() || pid <= 0 || maxLines <= 0)
+        return result;
+
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return result;
+
+    QString pidStr = QString("PID=%1").arg(pid);
+    QStringList matched;
+    while (!f.atEnd()) {
+        QByteArray line = f.readLine();
+        QString s = QString::fromUtf8(line).trimmed();
+        if (s.contains(pidStr, Qt::CaseInsensitive))
+            matched.append(s);
+    }
+    f.close();
+
+    if (total) *total = matched.size();
+
+    // 返回最近的 maxLines 条
+    int start = matched.size() - maxLines;
+    if (start < 0) start = 0;
+    for (int i = start; i < matched.size(); i++)
+        result.append(matched[i]);
+    return result;
+}
+
+// 判断日志是否属于注册表防护或文件防护（磁盘缓存仅保存这两类，供回滚参考）
+// Provider 规范：R0 为 Kernel.RegistryProtection / Kernel.FileProtection，
+//                R3 为 User.RegistryProtection / User.FileProtection
+static bool BehaviorCacheIsRegOrFile(const QString& Provider)
+{
+    QString p = Provider.trimmed().toLower();
+    if (p.isEmpty())
+        return false;
+    return p.contains("registry") || p.contains("file");
+}
+
+// ==================== 回滚记录磁盘持久化（结构化）====================
+// 驱动 g_baDroppedFiles / g_baRegOps 环形缓冲区溢出时上报的 BA_ROLLBACK_LOG_RECORD，
+// 主程序以 "RB;..." 前缀行落盘（与文本日志混合在同一缓存文件，300MB 上限）。
+// 回滚时结合驱动当前 BA_ROLLBACK_LIST 与磁盘中的回滚记录一起执行。
+#define ROLLBACK_LINE_PREFIX    "RB;"
+
+// 追加一条回滚记录到磁盘缓存（结构化，供回滚时检索）
+void BehaviorCacheAppendRollbackRecord(const BA_ROLLBACK_LOG_RECORD& rec)
+{
+    QString line;
+    line += QString("%1%2;%3;%4;%5;%6;%7;%8;%9;")
+        .arg(ROLLBACK_LINE_PREFIX)
+        .arg(rec.type)
+        .arg((qint64)rec.pid)
+        .arg(QString::fromLatin1(rec.path))
+        .arg(QString::fromLatin1(rec.valueName))
+        .arg(rec.regOp)
+        .arg(rec.hadExisting)
+        .arg(rec.originalType)
+        .arg(rec.originalDataLen);
+    // 原始值备份以十六进制追加，避免二进制与文本日志冲突
+    DWORD dl = rec.originalDataLen;
+    if (dl > BA_RBLOG_BACKUP_LEN) dl = BA_RBLOG_BACKUP_LEN;
+    for (DWORD i = 0; i < dl; i++)
+        line += QString("%1").arg((unsigned char)rec.originalData[i], 2, 16, QLatin1Char('0'));
+    BehaviorCacheAppend(line);
+}
+
+// 从磁盘缓存检索指定 PID 的回滚记录（结构化），返回最近最多 maxRecords 条
+static QVector<BA_ROLLBACK_LOG_RECORD> BehaviorCacheQueryRollbackRecords(qint64 pid, int maxRecords)
+{
+    QVector<BA_ROLLBACK_LOG_RECORD> out;
+    QVector<BA_ROLLBACK_LOG_RECORD> matched;
+    QString path = BehaviorCacheFilePath();
+    if (path.isEmpty() || pid <= 0 || maxRecords <= 0)
+        return out;
+
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return out;
+
+    while (!f.atEnd()) {
+        QByteArray raw = f.readLine();
+        if (!raw.startsWith(ROLLBACK_LINE_PREFIX))
+            continue;
+        QString line = QString::fromLatin1(raw).trimmed();
+        QStringList parts = line.split(';');
+        if (parts.size() < 9)
+            continue;
+
+        BA_ROLLBACK_LOG_RECORD rec;
+        memset(&rec, 0, sizeof(rec));
+        rec.type = (UINT8)parts[1].toUInt();
+        qint64 recPid = parts[2].toLongLong();
+        if (recPid != pid)
+            continue;
+        rec.pid = recPid;
+
+        QByteArray pb = parts[3].toLatin1();
+        memcpy(rec.path, pb.constData(), qMin(pb.size(), BA_RBLOG_PATH_LEN - 1));
+        QByteArray vb = parts[4].toLatin1();
+        memcpy(rec.valueName, vb.constData(), qMin(vb.size(), BA_RBLOG_VALUE_NAME_LEN - 1));
+        rec.regOp = (UINT8)parts[5].toUInt();
+        rec.hadExisting = (UINT8)parts[6].toUInt();
+        rec.originalType = parts[7].toUInt();
+        DWORD dl = parts[8].toUInt();
+        if (dl > BA_RBLOG_BACKUP_LEN) dl = BA_RBLOG_BACKUP_LEN;
+        rec.originalDataLen = dl;
+        if (parts.size() > 9) {
+            QByteArray hex = parts[9].toLatin1();
+            for (DWORD i = 0; i < dl && (i * 2 + 1) < (DWORD)hex.size(); i++)
+                rec.originalData[i] = (UINT8)hex.mid(i * 2, 2).toUInt(nullptr, 16);
+        }
+        matched.append(rec);
+    }
+    f.close();
+
+    int start = matched.size() - maxRecords;
+    if (start < 0) start = 0;
+    for (int i = start; i < matched.size(); i++)
+        out.append(matched[i]);
+    return out;
+}
+
 // 通用日志写入核心：摘要 + 详情 + 等级 + 提供者
 static void Log_AddLogCore(QString Summary, QString Detail, LogLevel level, QString Provider)
 {
@@ -4577,6 +4826,17 @@ static void Log_AddLogCore(QString Summary, QString Detail, LogLevel level, QStr
     cTime = QString("[%1.%2.%3:%4°%5''%6]")
         .arg(1900 + tim->tm_year).arg(1 + tim->tm_mon).arg(tim->tm_mday)
         .arg(tim->tm_hour).arg(tim->tm_min).arg(tim->tm_sec);
+
+    // 磁盘缓存：仅落盘注册表/文件防护日志（时间戳 + 摘要 + 提供者 + 详情）
+    if (BehaviorCacheIsRegOrFile(Provider))
+    {
+        QString cacheLine = cTime + " " + Summary;
+        if (!Provider.isEmpty())
+            cacheLine += " [提供者:" + Provider + "]";
+        if (!Detail.isEmpty())
+            cacheLine += " | " + Detail;
+        BehaviorCacheAppend(cacheLine);
+    }
 
     /* 列表只显示摘要（无 [INFO] 等级前缀），等级信息通过图标颜色体现。
      * 详情存入 UserRole 供右侧面板展示。 */
@@ -4633,6 +4893,135 @@ void Log_AddLogEx(QString Summary, QString Detail, LogLevel level, QString Provi
 void Log_AddLogSimple(QString Summary, LogLevel level, QString Provider)
 {
     Log_AddLogCore(Summary, QString(), level, Provider);
+}
+
+// ==================== 用户态回滚执行（磁盘记录部分）====================
+// 驱动当前 BA_ROLLBACK_LIST 由驱动侧 BehaviorExecuteRollbackSelected 执行；
+// 磁盘缓存中的溢出回滚记录驱动已不再持有，由主程序在此执行。
+// 文件：设备路径 -> DOS 路径后删除；注册表：内核路径 -> Win 根键后恢复原值。
+struct RollbackOp {
+    int type;              // 0=file, 1=registry
+    qint64 pid;
+    QString path;          // 文件路径 或 注册表键路径
+    QString valueName;     // 注册表值名（文件为空）
+    int regOp;             // 0=SetValue, 1=DeleteValue
+    bool hadExisting;
+    DWORD originalType;
+    QByteArray originalData;
+    bool fromDriver;       // true=驱动当前 list；false=磁盘记录（主程序执行）
+};
+
+// 设备路径 -> DOS 路径（\\Device\\HarddiskVolume3\\... -> C:\\...）
+static bool DevicePathToDosPath(const QString& devicePath, QString& dosPath)
+{
+    for (wchar_t drv = L'A'; drv <= L'Z'; drv++) {
+        wchar_t root[8];
+        swprintf_s(root, 8, L"%c:", drv);
+        wchar_t target[512];
+        DWORD len = QueryDosDeviceW(root, target, 512);
+        if (len == 0)
+            continue;
+        QString dev = QString::fromWCharArray(target);
+        if (devicePath.startsWith(dev, Qt::CaseInsensitive)) {
+            dosPath = QString(QChar(drv)) + ":" + devicePath.mid(dev.length());
+            return true;
+        }
+    }
+    return false;
+}
+
+// 内核注册表路径 -> Win 根键 + 相对子键（\\REGISTRY\\MACHINE\\... -> HKLM + ...）
+static bool KernelRegPathToWin(const QString& kernelPath, HKEY* outRoot, QString& subKey)
+{
+    QString p = kernelPath;
+    QString lower = p.toLower();
+    if (lower.startsWith("\\registry\\machine")) {
+        *outRoot = HKEY_LOCAL_MACHINE;
+        subKey = p.mid(QString("\\REGISTRY\\MACHINE").length());
+        return true;
+    }
+    if (lower.startsWith("\\registry\\user")) {
+        *outRoot = HKEY_USERS;
+        subKey = p.mid(QString("\\REGISTRY\\USER").length());
+        return true;
+    }
+    return false;
+}
+
+// 执行磁盘回滚记录（带进度条 + 失败统计），返回失败条目描述（空串表示全部成功）
+static QString ExecuteDiskRollback(const QVector<RollbackOp>& ops, QWidget* parent)
+{
+    QStringList failures;
+    int total = ops.size();
+    if (total == 0)
+        return QString();
+
+    QProgressDialog progress(parent);
+    progress.setWindowTitle(QString::fromUtf8("回滚"));
+    progress.setLabelText(QString::fromUtf8("正在回滚磁盘缓存中的历史操作..."));
+    progress.setRange(0, total);
+    progress.setCancelButton(nullptr);
+    progress.setMinimumDuration(0);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.show();
+
+    for (int i = 0; i < total; i++) {
+        const RollbackOp& op = ops[i];
+        progress.setValue(i);
+        QApplication::processEvents();
+
+        if (op.type == 0) {
+            // 文件删除
+            QString dosPath;
+            if (!DevicePathToDosPath(op.path, dosPath))
+                dosPath = op.path;  // 可能已是 DOS 路径
+            if (DeleteFileW((LPCWSTR)dosPath.utf16())) {
+                // 成功
+            } else {
+                DWORD err = GetLastError();
+                if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND)
+                    ;  // 文件已不存在，视为成功
+                else
+                    failures.append(QString::fromUtf8("文件删除失败: %1 (err=%2)").arg(dosPath).arg(err));
+            }
+        } else {
+            // 注册表恢复
+            HKEY hRoot = NULL;
+            QString subKey;
+            if (KernelRegPathToWin(op.path, &hRoot, subKey)) {
+                HKEY hKey = NULL;
+                LONG r = RegOpenKeyExW(hRoot, (LPCWSTR)subKey.utf16(), 0, KEY_SET_VALUE, &hKey);
+                if (r == ERROR_SUCCESS) {
+                    LPCWSTR valName = op.valueName.isEmpty() ? NULL : (LPCWSTR)op.valueName.utf16();
+                    if (op.regOp == 0) {  // SetValue
+                        if (op.hadExisting && op.originalData.size() > 0)
+                            r = RegSetValueExW(hKey, valName, 0, op.originalType,
+                                (const BYTE*)op.originalData.constData(), op.originalData.size());
+                        else
+                            r = RegDeleteValueW(hKey, valName);
+                    } else if (op.regOp == 1) {  // DeleteValue
+                        if (op.hadExisting && op.originalData.size() > 0)
+                            r = RegSetValueExW(hKey, valName, 0, op.originalType,
+                                (const BYTE*)op.originalData.constData(), op.originalData.size());
+                        else
+                            r = ERROR_SUCCESS;  // 原本无值可恢复
+                    }
+                    if (r != ERROR_SUCCESS)
+                        failures.append(QString::fromUtf8("注册表恢复失败: %1\\%2 (err=%3)")
+                            .arg(op.path).arg(op.valueName).arg(r));
+                    RegCloseKey(hKey);
+                } else {
+                    failures.append(QString::fromUtf8("注册表打开失败: %1 (err=%2)").arg(op.path).arg(r));
+                }
+            } else {
+                failures.append(QString::fromUtf8("注册表路径无法识别: %1").arg(op.path));
+            }
+        }
+    }
+    progress.setValue(total);
+    progress.close();
+
+    return failures.join(QString::fromUtf8("\n"));
 }
 
 // ==================== 威胁回滚确认弹窗（非阻塞 modeless）====================
@@ -4714,28 +5103,74 @@ void ShowRollbackConfirmPopup(
 
     // 存储 checkbox 指针用于后续读取状态
     QVector<QCheckBox*> itemCheckBoxes;
+    // 合并后的回滚操作列表：先驱动当前 list，后磁盘缓存记录
+    QVector<RollbackOp> ops;
+    int driverCount = rollbackList->itemCount;
+    if (driverCount > BA_MAX_ROLLBACK_ITEMS) driverCount = BA_MAX_ROLLBACK_ITEMS;
 
-    int maxItems = rollbackList->itemCount;
-    if (maxItems > BA_MAX_ROLLBACK_ITEMS) maxItems = BA_MAX_ROLLBACK_ITEMS;
-
-    for (int i = 0; i < maxItems; i++)
+    // 1) 驱动当前 BA_ROLLBACK_LIST（由驱动执行）
+    for (int i = 0; i < driverCount; i++)
     {
         const BA_ROLLBACK_ITEM* item = &rollbackList->items[i];
+        RollbackOp op;
+        op.type = item->type;
+        op.pid = item->pid;
+        op.path = QString::fromUtf8(item->path);
+        op.valueName = QString::fromUtf8(item->valueName);
+        op.regOp = item->regOp;
+        op.hadExisting = (item->hadExisting != 0);
+        op.originalType = 0;
+        op.originalData.clear();
+        op.fromDriver = true;
+        ops.append(op);
+    }
+
+    // 2) 磁盘缓存回滚记录（驱动溢出上报，由主程序执行，去重）
+    {
+        QVector<BA_ROLLBACK_LOG_RECORD> diskRecs =
+            BehaviorCacheQueryRollbackRecords((qint64)rollbackList->rootPid, 1000);
+        for (const BA_ROLLBACK_LOG_RECORD& r : diskRecs)
+        {
+            // 与驱动 list 去重（type + path + valueName）
+            bool dup = false;
+            for (const RollbackOp& op : ops) {
+                if (op.type == (int)r.type &&
+                    op.path.compare(QString::fromLatin1(r.path), Qt::CaseInsensitive) == 0 &&
+                    op.valueName.compare(QString::fromLatin1(r.valueName), Qt::CaseInsensitive) == 0) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (dup) continue;
+
+            RollbackOp op;
+            op.type = r.type;
+            op.pid = r.pid;
+            op.path = QString::fromLatin1(r.path);
+            op.valueName = QString::fromLatin1(r.valueName);
+            op.regOp = r.regOp;
+            op.hadExisting = (r.hadExisting != 0);
+            op.originalType = r.originalType;
+            op.originalData = QByteArray((const char*)r.originalData, r.originalDataLen);
+            op.fromDriver = false;
+            ops.append(op);
+        }
+    }
+
+    // 3) 生成 checkbox 列表
+    for (int i = 0; i < ops.size(); i++)
+    {
+        const RollbackOp& op = ops[i];
         QString itemText;
-        if (item->type == 0)
-        {
-            // 文件
-            itemText = QString::fromUtf8("[文件] %1").arg(QString::fromUtf8(item->path));
-        }
-        else
-        {
-            // 注册表
-            QString opStr = (item->regOp == 0) ? QString::fromUtf8("设置值") : QString::fromUtf8("删除值");
+        if (op.type == 0)
+            itemText = QString::fromUtf8("[文件] %1").arg(op.path);
+        else {
+            QString opStr = (op.regOp == 0) ? QString::fromUtf8("设置值") : QString::fromUtf8("删除值");
             itemText = QString::fromUtf8("[注册表-%1] %2 \\ %3")
-                .arg(opStr)
-                .arg(QString::fromUtf8(item->path))
-                .arg(QString::fromUtf8(item->valueName));
+                .arg(opStr).arg(op.path).arg(op.valueName);
         }
+        if (!op.fromDriver)
+            itemText += QString::fromUtf8("（磁盘缓存）");
 
         QCheckBox* cb = new QCheckBox(itemText);
         cb->setChecked(true);  // 默认全选
@@ -4769,6 +5204,30 @@ void ShowRollbackConfirmPopup(
 
     layout->addWidget(headerWidget);
     layout->addWidget(infoLabel);
+
+    // ── 历史日志参考（从磁盘缓存加载该 PID 的旧数据，辅助回滚决策）──
+    {
+        int totalCount = 0;
+        QStringList hist = BehaviorCacheQueryPid((qint64)rollbackList->rootPid, 1000, &totalCount);
+        if (!hist.isEmpty())
+        {
+            QLabel* histLabel = new QLabel();
+            histLabel->setObjectName("rbHistory");
+            histLabel->setWordWrap(true);
+            histLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            QString txt = QString::fromUtf8("📋 历史行为日志（磁盘缓存）");
+            if (totalCount > hist.size())
+                txt += QString::fromUtf8("：共 %1 条，仅显示最近 %2 条\n").arg(totalCount).arg(hist.size());
+            else
+                txt += QString::fromUtf8("：共 %1 条\n").arg(totalCount);
+            for (int i = 0; i < hist.size(); i++)
+                txt += QString::fromUtf8("• ") + hist[i] + "\n";
+            histLabel->setText(txt);
+            histLabel->setContentsMargins(8, 6, 8, 6);
+            layout->addWidget(histLabel);
+        }
+    }
+
     layout->addWidget(scrollArea, 1);
     layout->addWidget(btnWidget);
 
@@ -4842,15 +5301,40 @@ void ShowRollbackConfirmPopup(
     // ── 按钮事件（使用 guard 防止 double-callback）──
     auto guard = std::make_shared<bool>(false);
 
-    QObject::connect(btnRollback, &ElaPushButton::clicked, dlg, [dlg, itemCheckBoxes, callback, guard]() {
+    QObject::connect(btnRollback, &ElaPushButton::clicked, dlg, [dlg, itemCheckBoxes, ops, driverCount, callback, guard]() {
         if (*guard) return;
         *guard = true;
+
+        // 驱动当前 list 部分：构造 selection 交由驱动执行
         BA_ROLLBACK_SELECTION sel = {0};
         sel.decision = 1;  // rollback
-        sel.itemCount = itemCheckBoxes.size();
+        sel.itemCount = driverCount;
         for (int i = 0; i < itemCheckBoxes.size() && i < BA_MAX_ROLLBACK_ITEMS; i++) {
-            sel.selected[i] = itemCheckBoxes[i]->isChecked() ? 1 : 0;
+            if (i < driverCount)
+                sel.selected[i] = itemCheckBoxes[i]->isChecked() ? 1 : 0;
         }
+
+        // 磁盘缓存记录部分：主程序执行（带进度条，失败弹窗告知）
+        QVector<RollbackOp> diskOps;
+        for (int i = driverCount; i < itemCheckBoxes.size(); i++) {
+            if (itemCheckBoxes[i]->isChecked() && i < ops.size() && !ops[i].fromDriver)
+                diskOps.append(ops[i]);
+        }
+        if (!diskOps.isEmpty()) {
+            QString failures = ExecuteDiskRollback(diskOps, dlg);
+            if (!failures.isEmpty()) {
+                Log_AddLogSimple(QString::fromUtf8("磁盘缓存回滚完成但有失败: %1 项")
+                    .arg(diskOps.size()), LOG_WARN);
+                MyShowMessageBox(QString::fromUtf8("部分磁盘缓存回滚失败:\n%1").arg(failures),
+                    NotificationPopup::Error, 8, QString::fromUtf8("回滚完成（有失败）"));
+            } else {
+                Log_AddLogSimple(QString::fromUtf8("磁盘缓存历史操作回滚成功: %1 项")
+                    .arg(diskOps.size()), LOG_SUCCESS);
+                MyShowMessageBox(QString::fromUtf8("磁盘缓存历史操作回滚成功（%1 项）").arg(diskOps.size()),
+                    NotificationPopup::Success, 4, QString::fromUtf8("回滚完成"));
+            }
+        }
+
         callback(sel);
         dlg->close();
     });

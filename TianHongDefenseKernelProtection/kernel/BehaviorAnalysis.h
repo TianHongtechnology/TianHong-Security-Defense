@@ -10,10 +10,10 @@
 #define BA_MAX_PATH            1024
 #define BA_MAX_NAME            256
 #define BA_MAX_PROCESSES       512
-#define BA_MAX_HISTORY         8000
+#define BA_MAX_HISTORY         10240
 #define BA_MAX_CHILDREN        64
-#define BA_MAX_EVIDENCE        32
-#define BA_MAX_INDICATORS      186
+#define BA_MAX_EVIDENCE        64
+#define BA_MAX_INDICATORS      187
 #define BA_MAX_PROFILES        256
 #define BA_MAX_RESULTS         64
 #define BA_MAX_CRYPT_EXTS      64
@@ -313,6 +313,7 @@ typedef enum _BA_INDICATOR {
     BA_IND_FILE_HIDDEN_EXE,            // 创建隐藏的可执行文件
     BA_IND_FILE_SYSTEM_HIDDEN_EXE,     // 创建系统级隐藏的可执行文件
     BA_IND_FILE_HIDDEN_EXE_WITH_SIBLING, // 同目录下存在可执行文件时创建隐藏的可执行文件
+    BA_IND_FILE_DLL_SIDE_LOAD_UNSIGNED,  // 未签名进程加载同目录未签名 DLL（侧载，低分 T1195.002）
     BA_IND_INVALID                     // Invalid/unknown indicator
 } BA_INDICATOR;
 
@@ -465,7 +466,7 @@ typedef struct _BA_PROCESS_NODE {
 } BA_PROCESS_NODE;
 
 // ── 注册表操作回滚跟踪常量 ──
-#define BA_MAX_REG_OPS            256
+#define BA_MAX_REG_OPS            1024  /* 扩容：256 -> 1024（堆分配） */
 #define BA_REG_KEY_PATH_LEN       320   /* WCHAR count */
 #define BA_REG_VALUE_NAME_LEN     64    /* WCHAR count */
 #define BA_REG_BACKUP_DATA_LEN    1024  /* bytes */
@@ -801,11 +802,13 @@ extern volatile LONG g_regDriverAccessDepth;
 //   2. 如果不是父子关系 → 入队work item → 挂起源进程 → 发送alert → 等待用户决策
 //   3. Block: 终止源进程, Allow: 恢复源进程
 // 注意：此函数异步执行，回调中调用后立即返回，不阻塞PreCreateHandle
+// threadStartAddr：远程线程起始地址（shellcode 内存证据，无则传 NULL）
 VOID BehaviorHandleInjectionAlertAsync(
     INT64 sourcePid, const CHAR* sourceName,
     INT64 targetPid, const CHAR* targetName,
     const CHAR* injectType,
-    INT64 threadId);
+    INT64 threadId,
+    PVOID threadStartAddr);
 
 // ── 检查地址是否落在目标进程已加载镜像范围内（shellcode 注入检测辅助）──
 // 返回 TRUE 表示地址在某个已加载 DLL/EXE 范围内（合法），
@@ -813,6 +816,27 @@ VOID BehaviorHandleInjectionAlertAsync(
 BOOLEAN BehaviorIsAddressInLoadedModule(
     INT64 targetPid,
     PVOID address);
+
+// ── 检查地址是否落在非镜像可执行内存（Elastic shellcode-thread 判定）──
+// 判定条件（对齐 Elastic kernel_shellcode_event）：
+//   - State == MEM_COMMIT
+//   - Protect 含 PAGE_EXECUTE_*（EXECUTE_READ / EXECUTE_READWRITE 等）
+//   - Type != MEM_IMAGE（无磁盘 PE 镜像映射，unbacked）
+// 返回 TRUE = unbacked executable（shellcode 注入强证据）
+// isExecutable 输出该页是否可执行（非 NULL 时填充）。
+BOOLEAN BehaviorCheckStartAddressUnbacked(
+    INT64 targetPid,
+    PVOID address,
+    BOOLEAN* isExecutable);
+
+// ── Trampoline 跳板检测：线程 Rip 采样（Elastic 博客公开对抗手段）──
+// StartAddress 指向合法模块导出、内部 jmp 到 shellcode 时，unbacked 判断失效；
+// 通过采样线程上下文 Rip，若 Rip 落入非镜像可执行内存则仍判定可疑。
+// 返回 TRUE = 当前 Rip 处于非镜像可执行区（trampoline 强证据）。
+// 采样失败/线程不可访问 → 返回 FALSE（无证据，保守放行）。
+BOOLEAN BehaviorIsThreadRipInUnbackedExecutable(
+    INT64 threadId,
+    INT64 targetPid);
 
 // ── 检测 EDR-Freeze: WerFaultSecure.exe 被非 WER 服务启动 ──
 // 在 ProcessCreateNotifyRoutine 中调用，匹配 Elastic 规则
@@ -905,6 +929,11 @@ VOID BehaviorRecordPrivilegeEscalationIndicator(
     const CHAR* targetPath,
     BA_INDICATOR indicatorId,
     const CHAR* evidenceText);
+
+// 记录 DLL 侧载指标（同目录未签名 DLL）：
+// - 签名进程加载未签名 DLL：BA_IND_FILE_DLL_SIDE_LOAD（标准分）
+// - 未签名进程加载未签名 DLL：BA_IND_FILE_DLL_SIDE_LOAD_UNSIGNED（低分）
+VOID BehaviorRecordDllSideLoad(INT64 pid, const CHAR* dllPath, BOOLEAN processSigned);
 
 // 规则例外管理
 NTSTATUS BehaviorAddException(const BA_EXCEPTION_ENTRY* exception);

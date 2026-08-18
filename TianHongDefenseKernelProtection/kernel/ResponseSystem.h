@@ -98,6 +98,10 @@ VOID SendBehaviorLog(
 VOID SendInjectionLog(
     _In_ const CHAR* Message);
 
+// 回滚记录发送（Fire-and-Forget，不等待响应，溢出丢磁盘，主程序持久化）
+VOID SendRollbackLogRecord(
+    _In_ const BA_ROLLBACK_LOG_RECORD* rec);
+
 // 响应缓存控制
 VOID ResponseCacheSetEnabled(BOOLEAN enabled);
 BOOLEAN ResponseCacheIsEnabled();

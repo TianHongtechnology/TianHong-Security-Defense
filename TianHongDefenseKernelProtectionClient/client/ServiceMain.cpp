@@ -2138,14 +2138,20 @@ void HandleUserQueries()
                 }
                 ResetConsoleColor();
 
-                DeviceIoControl(
+                if (!DeviceIoControl(
                     g_hCommDevice,
                     IOCTL_RULE_DETECTED_SEND_USER_RESPONSE,
                     &responsePacket, sizeof(responsePacket),
                     NULL, 0,
                     &bytesReturned,
                     NULL
-                );
+                ))
+                {
+                    DWORD error = GetLastError();
+                    SetConsoleColor(ConsoleColor::Red);
+                    printf("[-] DeviceIoControl failed (IOCTL_RULE_DETECTED_SEND_USER_RESPONSE): %d\n", error);
+                    ResetConsoleColor();
+                }
             }
             else if (ruleDetected->RuleType == RULE_TYPE_PROCESS_CHECK)
             {
@@ -2211,23 +2217,32 @@ void HandleUserQueries()
                 checkResult->nts = (allow != 0) ? STATUS_SUCCESS : STATUS_ACCESS_DENIED;
                 strcpy_s(checkResult->Data, (allow != 0) ? "Allow" : "Block");
 
-                DeviceIoControl(
+                if (!DeviceIoControl(
                     g_hCommDevice,
                     IOCTL_RULE_DETECTED_SEND_USER_RESPONSE,
                     &responsePacket, sizeof(responsePacket),
                     NULL, 0,
                     &bytesReturned,
-                    NULL);
+                    NULL
+                ))
+                {
+                    DWORD error = GetLastError();
+                    SetConsoleColor(ConsoleColor::Red);
+                    printf("[-] DeviceIoControl failed (IOCTL_RULE_DETECTED_SEND_USER_RESPONSE): %d\n", error);
+                    ResetConsoleColor();
+                }
             }
             else if (ruleDetected->RuleType == RULE_TYPE_DLL_SCAN)
             {
                 SetConsoleColor(ConsoleColor::Yellow);
                 const char* processPathStr = ruleDetected->ProcessPath[0] ? ruleDetected->ProcessPath : "Unknown";
                 const char* dllPathStr = ruleDetected->DllPath[0] ? ruleDetected->DllPath : "Unknown";
-                printf("[DLL-SCAN] PID=%d Path=%s DLL=%s\n",
+                int isSideLoad = ruleDetected->IsSideLoad;
+                printf("[DLL-SCAN] PID=%d Path=%s DLL=%s SideLoad=%d\n",
                     ruleDetected->ProcessPid,
                     processPathStr,
-                    dllPathStr);
+                    dllPathStr,
+                    isSideLoad);
                 ResetConsoleColor();
 
                 int allow = 0;
@@ -2269,13 +2284,20 @@ void HandleUserQueries()
                 checkResult->nts = (allow != 0) ? STATUS_SUCCESS : STATUS_ACCESS_DENIED;
                 strcpy_s(checkResult->Data, (allow != 0) ? "Allow" : "Block");
 
-                DeviceIoControl(
+                if (!DeviceIoControl(
                     g_hCommDevice,
                     IOCTL_RULE_DETECTED_SEND_USER_RESPONSE,
                     &responsePacket, sizeof(responsePacket),
                     NULL, 0,
                     &bytesReturned,
-                    NULL);
+                    NULL
+                ))
+                {
+                    DWORD error = GetLastError();
+                    SetConsoleColor(ConsoleColor::Red);
+                    printf("[-] DeviceIoControl failed (IOCTL_RULE_DETECTED_SEND_USER_RESPONSE): %d\n", error);
+                    ResetConsoleColor();
+                }
             }
             else if (ruleDetected->RuleType == RULE_TYPE_ROLLBACK_CONFIRM)
             {
@@ -2315,13 +2337,20 @@ void HandleUserQueries()
                 rbResultPacket->nts = STATUS_SUCCESS;
                 memcpy(rbResultPacket->Data, &sel, sizeof(BA_ROLLBACK_SELECTION));
 
-                DeviceIoControl(
+                if (!DeviceIoControl(
                     g_hCommDevice,
                     IOCTL_RULE_DETECTED_SEND_USER_RESPONSE,
                     &responsePacket, sizeof(responsePacket),
                     NULL, 0,
                     &bytesReturned,
-                    NULL);
+                    NULL
+                ))
+                {
+                    DWORD error = GetLastError();
+                    SetConsoleColor(ConsoleColor::Red);
+                    printf("[-] DeviceIoControl failed (IOCTL_RULE_DETECTED_SEND_USER_RESPONSE): %d\n", error);
+                    ResetConsoleColor();
+                }
             }
             else if (ruleDetected->RuleType == RULE_TYPE_INJECTION_LOG)
             {
@@ -2379,14 +2408,57 @@ void HandleUserQueries()
                 logResult->nts = STATUS_SUCCESS;
                 strcpy_s(logResult->Data, "Log received");
 
-                DeviceIoControl(
+                if (!DeviceIoControl(
                     g_hCommDevice,
                     IOCTL_RULE_DETECTED_SEND_USER_RESPONSE,
                     &responsePacket, sizeof(responsePacket),
                     NULL, 0,
                     &bytesReturned,
                     NULL
-                );
+                ))
+                {
+                    DWORD error = GetLastError();
+                    SetConsoleColor(ConsoleColor::Red);
+                    printf("[-] DeviceIoControl failed (IOCTL_RULE_DETECTED_SEND_USER_RESPONSE): %d\n", error);
+                    ResetConsoleColor();
+                }
+            }
+            else if (ruleDetected->RuleType == RULE_TYPE_ROLLBACK_LOG)
+            {
+                /* 回滚记录（溢出丢磁盘）：驱动 g_baDroppedFiles/g_baRegOps 溢出时上报，
+                 * 转发到 main.cpp 持久化到行为磁盘缓存（300MB 上限），供回滚参考。 */
+                PBA_ROLLBACK_LOG_RECORD rbRec = (PBA_ROLLBACK_LOG_RECORD)ruleDetected->Data;
+
+                if (g_bSocketConnected)
+                {
+                    Packet rbPkt = {};
+                    rbPkt.PacketTyped = PTClientMessage;
+                    strcpy_s(rbPkt.InfoTitle, CLIENT_MSG_ROLLBACK_LOG);
+                    memcpy(rbPkt.Message, rbRec, sizeof(BA_ROLLBACK_LOG_RECORD));
+                    SendPacketToMain(rbPkt);
+                }
+
+                /* 发送响应释放驱动端请求 */
+                ZeroMemory(&responsePacket, sizeof(responsePacket));
+                responsePacket.Type = RESPONSE_RESULT;
+                COMM_RESPONSE_RESULT* rbResult = (COMM_RESPONSE_RESULT*)responsePacket.Data;
+                rbResult->nts = STATUS_SUCCESS;
+                strcpy_s(rbResult->Data, "Rollback log received");
+
+                if (!DeviceIoControl(
+                    g_hCommDevice,
+                    IOCTL_RULE_DETECTED_SEND_USER_RESPONSE,
+                    &responsePacket, sizeof(responsePacket),
+                    NULL, 0,
+                    &bytesReturned,
+                    NULL
+                ))
+                {
+                    DWORD error = GetLastError();
+                    SetConsoleColor(ConsoleColor::Red);
+                    printf("[-] DeviceIoControl failed (IOCTL_RULE_DETECTED_SEND_USER_RESPONSE): %d\n", error);
+                    ResetConsoleColor();
+                }
             }
             else if (ruleDetected->RuleType == RULE_TYPE_NTDLL_RELOAD)
             {
@@ -2485,14 +2557,20 @@ void HandleUserQueries()
                 strcpy_s(ntdllResult->Data,
                     (ntdllChoice == IDNO) ? "NtdllReload blocked - process terminated" : "NtdllReload allowed");
 
-                DeviceIoControl(
+                if (!DeviceIoControl(
                     g_hCommDevice,
                     IOCTL_RULE_DETECTED_SEND_USER_RESPONSE,
                     &responsePacket, sizeof(responsePacket),
                     NULL, 0,
                     &bytesReturned,
                     NULL
-                );
+                ))
+                {
+                    DWORD error = GetLastError();
+                    SetConsoleColor(ConsoleColor::Red);
+                    printf("[-] DeviceIoControl failed (IOCTL_RULE_DETECTED_SEND_USER_RESPONSE): %d\n", error);
+                    ResetConsoleColor();
+                }
             }
             else
             {
@@ -2721,14 +2799,20 @@ void HandleUserQueries()
                 }
                 ResetConsoleColor();
 
-                DeviceIoControl(
+                if (!DeviceIoControl(
                     g_hCommDevice,
                     IOCTL_RULE_DETECTED_SEND_USER_RESPONSE,
                     &responsePacket, sizeof(responsePacket),
                     NULL, 0,
                     &bytesReturned,
                     NULL
-                );
+                ))
+                {
+                    DWORD error = GetLastError();
+                    SetConsoleColor(ConsoleColor::Red);
+                    printf("[-] DeviceIoControl failed (IOCTL_RULE_DETECTED_SEND_USER_RESPONSE): %d\n", error);
+                    ResetConsoleColor();
+                }
             }  /* end else (non-behavior) */
         }
     }
@@ -3277,6 +3361,7 @@ DWORD WINAPI ClientRecvThread(LPVOID lpParam)
             }
             else if (strcmp(packet.InfoTitle, CLIENT_MSG_QUIT) == 0)
             {
+                printf("[.] Received QUIT from main, cleaning up...\n");
                 g_bSocketConnected = FALSE;
                 closesocket(g_clientSocket);
                 g_clientSocket = INVALID_SOCKET;
@@ -4099,8 +4184,7 @@ int main(int argc, char* argv[])
         if (statusOk)
         {
             char logBuf[256];
-            sprintf_s(logBuf, "[驱动加载] TianHongHips.Disk 磁盘过滤驱动已启动 (MBR保护=%lu个磁盘)",
-                diskStatus.attachedDiskCount);
+            sprintf_s(logBuf, "[MBR防护] 初始化成功，已防护 %lu 个磁盘", diskStatus.attachedDiskCount);
             SendLogToMain(logBuf);
             SetConsoleColor(ConsoleColor::Green);
             printf("[+] MBR protection ACTIVE: attachedDisks=%lu volumes=%lu blocked=%lu\n",
@@ -4115,7 +4199,7 @@ int main(int argc, char* argv[])
             printf("[!] Driver loaded but MBR writes will NOT be intercepted.\n");
             printf("[!] Check DbgView for 'Attach FAILED' logs (device name may not match).\n");
             ResetConsoleColor();
-            SendLogToMain("[驱动警告] TianHongHips.Disk 磁盘过滤驱动已加载但未附加到任何磁盘（MBR写入将无法拦截），请检查 DbgView 中的 Attach FAILED 日志");
+            SendLogToMain("[MBR防护] 初始化警告：驱动已加载但未附加到磁盘，MBR 写入将无法拦截");
         }
     }
     else
@@ -4126,7 +4210,7 @@ int main(int argc, char* argv[])
         ResetConsoleColor();
         {
             char logBuf[256];
-            sprintf_s(logBuf, "[驱动错误] TianHongHips.Disk 磁盘过滤驱动加载失败（MBR保护已禁用），错误码=0x%X，文件可能缺失或被拒绝加载", diskErr);
+            sprintf_s(logBuf, "[MBR防护] 初始化失败（错误码=0x%X），MBR 保护已禁用", diskErr);
             SendLogToMain(logBuf);
         }
     }
@@ -4861,11 +4945,20 @@ void CleanupAndExit()
     /* 通过 IOCTL 通知驱动准备卸载（停止定时器、卸载 Minifilter）*/
     if (g_hDevice != INVALID_HANDLE_VALUE)
     {
+        printf("[.] Sending IOCTL_PREPARE_UNLOAD to driver...\n");
         DWORD bytesReturned;
-        DeviceIoControl(g_hDevice, IOCTL_PREPARE_UNLOAD,
+        BOOL ok = DeviceIoControl(g_hDevice, IOCTL_PREPARE_UNLOAD,
             NULL, 0, NULL, 0, &bytesReturned, NULL);
+        if (ok)
+            printf("[+] IOCTL_PREPARE_UNLOAD succeeded\n");
+        else
+            printf("[-] IOCTL_PREPARE_UNLOAD failed: %d\n", GetLastError());
         CloseHandle(g_hDevice);
         g_hDevice = INVALID_HANDLE_VALUE;
+    }
+    else
+    {
+        printf("[!] g_hDevice is INVALID_HANDLE_VALUE, skipping IOCTL_PREPARE_UNLOAD\n");
     }
 
     if (g_hCommDevice != INVALID_HANDLE_VALUE)

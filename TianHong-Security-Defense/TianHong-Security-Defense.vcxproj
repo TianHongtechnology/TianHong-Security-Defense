@@ -255,4 +255,11 @@
   </ImportGroup>
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
+  <Target Name="CopyBatchScanRules" AfterTargets="Build">
+    <MakeDir Directories="$(OutDir)\Resources\rules\batchscan\"
+             Condition="!Exists('$(OutDir)\Resources\rules\batchscan\')" />
+    <Copy SourceFiles="..\rules\batchscan\heuristics.toml;..\rules\batchscan\sandbox.toml"
+          DestinationFolder="$(OutDir)\Resources\rules\batchscan\"
+          Condition="Exists('..\rules\batchscan\heuristics.toml')" />
+  </Target>
 </Project>

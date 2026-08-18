@@ -433,6 +433,7 @@ windeployqt --release TianHong-Security-Defense.exe
 | [libbz2](https://sourceware.org/bzip2/) | BZIP2 License | bzip2 压缩 |
 | [pdcurses](https://pdcurses.org/) | Public Domain | 终端 UI |
 | [json-c](https://github.com/json-c/json-c) | MIT | JSON 解析 |
+| [injdrv](https://github.com/wbenny/injdrv) | MIT | 内核 APC DLL 注入方案参考（kernel APC + section Map/Unmap 实现注入） |
 
 完整 license 详情见 [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md)。
 

@@ -12,6 +12,7 @@
 #include "BehaviorDynamicRules.h"
 #include "BehaviorIndicatorDefs.h"
 #include "Whitelist.h"
+#include "DriverDllInject.h"        /* 驱动端 DLL 注入（参考 injdrv: https://github.com/wbenny/injdrv） */
 
 #ifndef PROCESS_QUERY_LIMITED_INFORMATION
 #define PROCESS_QUERY_LIMITED_INFORMATION 0x1000
@@ -403,6 +404,20 @@ VOID NTAPI ProcessCreateNotifyRoutine(
             fullPath[0] != '\0' ? fullPath : "Unknown",
             cmdLineBuf[0] != '\0' ? cmdLineBuf : NULL);
 
+        /* ── 注册新进程用于驱动 APC 注入 ──
+         * R0+R3 启用时，驱动通过 LoadImageNotifyRoutine 监听系统 DLL 加载，
+         * 待 ntdll/kernel32 就绪后以 kernel APC + user APC 注入防御 DLL。
+         * 必须在进程创建时加入 g_DriverDllInjectInfoListHead，否则
+         * DriverDllInjectLoadImageNotifyRoutine 中 FindInjectionInfo 返回 NULL，
+         * 注入永远不会触发。具体注入条件（R3 开关、DLL 路径、受保护进程）由
+         * LoadImageNotifyRoutine 内部自行过滤。 */
+        if (g_bR3ProtectionEnabled && g_bDllInjectPathSet)
+        {
+            NTSTATUS injStatus = DriverDllInjectCreateInjectionInfo(NULL, (HANDLE)(ULONG_PTR)pid);
+            DriverDbgPrint("[DLL-INJECT] ProcessCreate: PID=%lld status=0x%X enabled=%d pathSet=%d\n",
+                (INT64)(ULONG_PTR)pid, injStatus, g_bR3ProtectionEnabled, g_bDllInjectPathSet);
+        }
+
         /* 无签名脚本宿主独立检测通道 */
         BehaviorCheckUnsignedScriptHost(pid, parentPid,
             fullPath[0] != '\0' ? fullPath : "Unknown");
@@ -448,7 +463,7 @@ VOID NTAPI ProcessCreateNotifyRoutine(
              * 被误判为远程线程注入（CreateRemoteThread） */
             RemoveProcessInitialized(ProcessId);
             /* 清理注入去重表，避免 PID 复用后新进程被误判为已注入而跳过注入 */
-            InjectCleanupPid(ProcessId);
+            DriverDllInjectRemoveInjectionInfoByProcessId(ProcessId, TRUE);
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             DriverDbgPrint("[PROCESS-CREATE] Exception caught in process exit handling, skipping\n");
         }
@@ -536,8 +551,23 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     // 解析进程操作 API（R0 独立进程创建检查使用）
     ResolveProcessManipulationApis();
 
-    // 初始化 pending 注入 work item 跟踪（驱动卸载时等待完成）
-    InjectPendingInit();
+    // 初始化 ntdll 追踪上下文
+    NtdllTrackInitialize();
+
+    // 初始化 DLL 注入模块（参考 injdrv）
+    {
+        DRIVER_DLL_INJECT_SETTINGS injectSettings = { 0 };
+#if defined(_M_AMD64)
+        injectSettings.Method = DriverDllInjectMethodThunkless;
+#else
+        injectSettings.Method = DriverDllInjectMethodThunk;
+#endif
+        NTSTATUS injectStatus = DriverDllInjectInitialize(DriverObject, RegistryPath, &injectSettings);
+        if (!NT_SUCCESS(injectStatus))
+        {
+            DriverDbgPrint("[DLL-INJECT] DriverDllInjectInitialize failed: 0x%X\n", injectStatus);
+        }
+    }
 
     // 启动异步行为分析定时器线程（卡巴斯基思路：回调同步记录，定时器异步分析）
     BehaviorStartTimerThread();
@@ -671,9 +701,8 @@ VOID DriverUnload(PDRIVER_OBJECT DriverObject)
     /* 先取消所有待处理请求，唤醒等待线程 */
     ResponseSystemCancelAll();
 
-    /* 等待所有 pending 注入 work item 完成，防止 work item 线程
-     * 访问已释放的驱动代码/数据导致蓝屏 */
-    InjectPendingWaitAll();
+    /* 清理 DLL 注入模块，防止访问已释放的驱动代码导致蓝屏 */
+    DriverDllInjectDestroy();
 
     DriverDbgPrint("Unregistering callbacks...\n");
 

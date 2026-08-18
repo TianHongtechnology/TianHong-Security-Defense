@@ -35,6 +35,7 @@
 #define CLIENT_MSG_DLL_SCAN_RESP    "DLL_SCAN_RESP"     // main -> Client: DLL 检查结果
 #define CLIENT_MSG_ROLLBACK_CONFIRM       "ROLLBACK_CONFIRM"        // Client -> main: 威胁回滚确认
 #define CLIENT_MSG_ROLLBACK_CONFIRM_RESP  "ROLLBACK_CONFIRM_RESP"   // main -> Client: 回滚选择结果
+#define CLIENT_MSG_ROLLBACK_LOG           "ROLLBACK_LOG"            // Client -> main: 回滚记录（溢出丢磁盘，主程序持久化）
 
 // -- Port number --
 #define CLIENT_SOCKET_PORT          12347
@@ -76,12 +77,14 @@ struct ClientDllScanData {
     char processPath[520];
     char processName[64];
     char dllPath[520];
-    int blocking;  // 1=阻塞扫描, 0=异步扫描
+    int blocking;       // 1=阻塞扫描, 0=异步扫描
+    int isSideLoad;     // 1=同目录未签名DLL（进程签名已降级）
 };
 
 struct ClientDllScanResponse {
     INT64 pid;
-    int allow;  // 0=Block, 1=Allow
+    int allow;       // 0=Block, 1=Allow
+    int isSideLoad;  // 1=同目录未签名DLL（进程签名已降级），0=普通DLL扫描
 };
 
 // -- Rollback confirmation structures (also defined in Common.h with guard) --
@@ -112,6 +115,24 @@ typedef struct _BA_ROLLBACK_SELECTION {
     INT32   itemCount;
     UINT8   selected[BA_MAX_ROLLBACK_ITEMS];  // 1=selected for rollback
 } BA_ROLLBACK_SELECTION;
+
+// -- Rollback log record (kernel overflow -> client -> main 磁盘缓存) --
+#define BA_RBLOG_PATH_LEN      180
+#define BA_RBLOG_VALUE_NAME_LEN 32
+#define BA_RBLOG_BACKUP_LEN    1024
+
+typedef struct _BA_ROLLBACK_LOG_RECORD {
+    UINT8   type;              // 0=file, 1=registry
+    INT64   pid;               // process that performed the operation
+    CHAR    path[BA_RBLOG_PATH_LEN];        // file path or registry key path
+    CHAR    valueName[BA_RBLOG_VALUE_NAME_LEN]; // registry value name (empty for files)
+    UINT8   regOp;             // 0=SetValue, 1=DeleteValue (for registry only)
+    UINT8   hadExisting;       // whether original value existed (for registry only)
+    UINT32  originalType;      // original value type REG_DWORD/REG_SZ...
+    UINT32  originalDataLen;   // original value data bytes
+    UINT8   originalData[BA_RBLOG_BACKUP_LEN]; // original value backup data
+} BA_ROLLBACK_LOG_RECORD;
+typedef BA_ROLLBACK_LOG_RECORD* PBA_ROLLBACK_LOG_RECORD;
 #pragma pack(pop)
 #endif /* _BA_ROLLBACK_STRUCTS_DEFINED */
 

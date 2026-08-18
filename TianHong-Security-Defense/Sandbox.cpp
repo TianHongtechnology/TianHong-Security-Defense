@@ -20,11 +20,29 @@ namespace {
 /* ============================================================
  *  String utilities
  * ============================================================ */
+// Maximum string size for Trim to avoid stack/heap overflow on huge inputs.
+static constexpr size_t kMaxTrimSize = 1024 * 1024; // 1 MB
+
 static inline std::string Trim(const std::string& s) {
+    // Fast path: empty or single-character strings
+    if (s.size() <= 1) return s;
+    // Guard against excessively large strings to prevent heap overflow in substr.
+    if (s.size() > kMaxTrimSize) {
+        // Scan only the first and last 4KB to trim whitespace without copying.
+        size_t a = 0;
+        size_t scan_start = (s.size() > 4096) ? s.size() - 4096 : 0;
+        while (a < 4096 && std::isspace(static_cast<unsigned char>(s[a]))) ++a;
+        size_t b = s.size();
+        while (b > scan_start && std::isspace(static_cast<unsigned char>(s[b - 1]))) --b;
+        if (a >= 4096 || b <= scan_start) return "";
+        if (a == 0 && b == s.size()) return s;
+        return s.substr(a, b - a);
+    }
     size_t a = 0;
     while (a < s.size() && std::isspace(static_cast<unsigned char>(s[a]))) ++a;
     size_t b = s.size();
     while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) --b;
+    if (a == 0 && b == s.size()) return s;
     return s.substr(a, b - a);
 }
 
@@ -186,6 +204,8 @@ private:
     }
 
     static std::string ExpandCmdDelayed(std::string s) {
+        // Guard against excessively large strings to prevent regex engine overflow.
+        if (s.size() > 256 * 1024) return s;
         std::regex re(R"(!([a-zA-Z0-9_]+)!)");
         std::smatch m;
         while (std::regex_search(s, m, re)) {
@@ -212,10 +232,14 @@ private:
 
     // PowerShell [char[]]@(97,98,99) -join '' patterns.
     static std::string ExpandPsCharArrays(std::string s) {
+        // Guard against excessively large strings to prevent regex engine overflow.
+        if (s.size() > 256 * 1024) return s;
         std::regex re1(R"(\[char\]\s*\(?\s*(\d+)\s*\)?)");
         std::smatch m;
         while (std::regex_search(s, m, re1)) {
-            char ch = static_cast<char>(std::stoi(m[1].str()) & 0xFF);
+            int n = 0;
+            try { n = std::stoi(m[1].str()); } catch (...) { break; }
+            char ch = static_cast<char>(n & 0xFF);
             s.replace(m.position(), m.length(), std::string(1, ch));
         }
         std::regex re2(R"(\[char\[\]\]\s*@?\s*\(([^)]+)\))");
@@ -224,8 +248,11 @@ private:
             std::string out;
             for (const auto& tok : Split(nums, ',')) {
                 std::string v = Trim(tok);
-                if (!v.empty() && std::isdigit(v[0]))
-                    out.push_back(static_cast<char>(std::stoi(v) & 0xFF));
+                if (!v.empty() && std::isdigit(v[0])) {
+                    int n = 0;
+                    try { n = std::stoi(v); } catch (...) { continue; }
+                    out.push_back(static_cast<char>(n & 0xFF));
+                }
             }
             s.replace(m.position(), m.length(), out);
         }
@@ -404,6 +431,8 @@ private:
     }
 
     static std::string DecodeBase64Blocks(std::string s) {
+        // Guard against excessively large strings to prevent regex engine overflow.
+        if (s.size() > 256 * 1024) return s;
         try {
             std::regex re(R"((?:[A-Za-z0-9+/]{4,}={0,2}))");
             std::map<size_t, std::pair<size_t, std::string>, std::greater<size_t>> repls;
@@ -446,6 +475,8 @@ private:
     }
 
     static std::string ReplacePsAliases(std::string s) {
+        // Guard against excessively large strings to prevent regex engine overflow.
+        if (s.size() > 256 * 1024) return s;
         std::string t = ToLower(s);
         static const std::pair<const char*, const char*> aliases[] = {
             {"iex", "Invoke-Expression"}, {"gwmi", "Get-WmiObject"},
@@ -698,6 +729,13 @@ private:
 /* ============================================================
  *  Chain detector
  * ============================================================ */
+
+// 前向声明：沙盒动态规则加载函数定义在文件末尾，供 ChainDetector::BuildRules() 调用。
+struct SandboxTomlRule;
+static std::vector<SandboxTomlRule> LoadSandboxRulesFromFile(const std::string& path);
+struct FamilyChain;
+static std::vector<FamilyChain> BuildFamilyChainsFromToml(const std::vector<SandboxTomlRule>& tomlRules);
+
 struct ChainStep {
     std::string action;
     std::function<bool(const BehaviorRecord&)> matcher;
@@ -709,6 +747,7 @@ struct FamilyChain {
     std::vector<ChainStep> steps;
     int min_match = 3;
     int severity = 75;
+    bool ordered = true;  // true=按链匹配(需按顺序命中); false=按行为匹配(仅需条件满足)
 };
 
 class ChainDetector {
@@ -1262,6 +1301,22 @@ private:
         http_dropper_steps();
         additional_families_steps();
         more_families_steps();
+
+        // 从 rules/batchscan/sandbox.toml 动态加载额外的行为链规则
+        std::string exePathBuf;
+        {
+            char buf[MAX_PATH] = {0};
+            DWORD n = GetModuleFileNameA(NULL, buf, MAX_PATH);
+            if (n > 0) {
+                std::string p(buf);
+                size_t pos = p.rfind('\\');
+                if (pos != std::string::npos) p = p.substr(0, pos);
+                exePathBuf = p + "\\Resources\\rules\\batchscan\\sandbox.toml";
+            }
+        }
+        auto tomlRules = LoadSandboxRulesFromFile(exePathBuf);
+        auto dynChains = BuildFamilyChainsFromToml(tomlRules);
+        rules_.insert(rules_.end(), dynChains.begin(), dynChains.end());
     }
 
     void http_dropper_steps() {
@@ -2448,6 +2503,23 @@ private:
     static Match MatchRule(const std::vector<BehaviorRecord>& records, const FamilyChain& rule) {
         Match m;
         m.total_steps = static_cast<int>(rule.steps.size());
+
+        // 按行为匹配：只要求每个步骤条件被满足，不要求先后顺序（适合不适合作链的规则）
+        if (!rule.ordered) {
+            for (size_t i = 0; i < rule.steps.size(); ++i) {
+                const auto& step = rule.steps[i];
+                for (const auto& r : records) {
+                    if (step.matcher(r)) {
+                        ++m.matched_steps;
+                        m.order_score += (1 + static_cast<int>(i));
+                        m.evidence.push_back(r.action + ":" + r.target);
+                        break;  // 该步骤已被满足，跳到下一个步骤
+                    }
+                }
+            }
+            return m;
+        }
+
         int last_ts = -1000;
         size_t idx = 0;
         int order = 0;
@@ -2469,6 +2541,210 @@ private:
 };
 
 } // anonymous namespace
+
+// ============================================================
+// 沙盒行为链动态规则加载器（从 rules/batchscan/sandbox.toml 读取）
+// ============================================================
+namespace {
+
+struct SandboxTomlRule {
+    std::string family;
+    int severity = 75;
+    std::string mode = "chain";  // "chain"=按链匹配(需顺序); "behavior"=按行为匹配(仅需条件)
+    int min_match = 3;
+    int max_interval = 30;
+    struct Step {
+        std::string action;
+        std::string pattern;       // target 或 details 中需包含的子串（大小写不敏感）
+        std::string path_contains; // target 路径中需包含
+        std::string path_endswith; // target 路径后缀
+        std::string detail_contains;
+    };
+    std::vector<Step> steps;
+};
+
+static std::string TrimStr2(const std::string& s) {
+    size_t a = 0;
+    while (a < s.size() && std::isspace((unsigned char)s[a])) ++a;
+    size_t b = s.size();
+    while (b > a && std::isspace((unsigned char)s[b - 1])) --b;
+    return s.substr(a, b - a);
+}
+
+static std::string Unquote2(const std::string& s) {
+    std::string t = TrimStr2(s);
+    if (t.size() >= 2 && t.front() == '"' && t.back() == '"')
+        return t.substr(1, t.size() - 2);
+    return t;
+}
+
+static std::vector<SandboxTomlRule> LoadSandboxRulesFromFile(const std::string& path) {
+    std::vector<SandboxTomlRule> rules;
+    std::ifstream f(path, std::ios::binary);
+    if (!f.is_open()) return rules;
+    std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    f.close();
+
+    // 按 --- 分隔块，再按 [[rule]] 标记识别每个规则块
+    std::vector<std::string> blocks;
+    {
+        std::istringstream iss(content);
+        std::string block, line;
+        while (std::getline(iss, line)) {
+            if (TrimStr2(line) == "---") {
+                if (!block.empty()) blocks.push_back(block);
+                block.clear();
+            } else {
+                block += line + "\n";
+            }
+        }
+        if (!block.empty()) blocks.push_back(block);
+    }
+
+    for (const auto& b : blocks) {
+        if (b.find("[[rule]]") == std::string::npos) continue;
+
+        SandboxTomlRule rule;
+        std::vector<std::string> lines;
+        {
+            std::istringstream iss(b);
+            std::string line;
+            while (std::getline(iss, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                lines.push_back(line);
+            }
+        }
+
+        bool in_steps = false;
+        bool in_step_obj = false;
+        std::string step_acc;
+
+        for (const auto& line : lines) {
+            std::string trimmed = TrimStr2(line);
+            if (trimmed.empty() || trimmed[0] == '#') continue;
+
+            if (trimmed == "steps = [") {
+                in_steps = true;
+                continue;
+            }
+            if (in_steps) {
+                if (trimmed == "]") {
+                    in_steps = false;
+                    continue;
+                }
+                // 解析 { action = "...", pattern = "...", ... }（支持单行/多行步对象）
+                if (trimmed.find('{') != std::string::npos) in_step_obj = true;
+                if (in_step_obj) {
+                    // 先收集整行内容再判断是否闭合，避免单行对象丢失字段
+                    step_acc += trimmed + " ";
+                    if (trimmed.find('}') != std::string::npos) {
+                        in_step_obj = false;
+                        // 解析 step_acc 中收集的内容
+                        {
+                            SandboxTomlRule::Step step;
+                            std::string acc = step_acc;
+                            step_acc.clear();
+                            // 简单 key=value 解析
+                            size_t pos = 0;
+                            while (pos < acc.size()) {
+                                // 找 key =
+                                size_t kpos = acc.find_first_of("=", pos);
+                                if (kpos == std::string::npos) break;
+                                std::string key = TrimStr2(acc.substr(pos, kpos - pos));
+                                // 去除 key 前导的 '{'（单行/多行对象 { action = ... 的首个 key）
+                                if (!key.empty() && key.front() == '{') key = TrimStr2(key.substr(1));
+                                size_t vstart = kpos + 1;
+                                size_t vend = acc.find_first_of(",}", vstart);
+                                if (vend == std::string::npos) vend = acc.size();
+                                std::string val = Unquote2(TrimStr2(acc.substr(vstart, vend - vstart)));
+                                if (key == "action") step.action = val;
+                                else if (key == "pattern") step.pattern = val;
+                                else if (key == "path_contains") step.path_contains = val;
+                                else if (key == "path_endswith") step.path_endswith = val;
+                                else if (key == "detail_contains") step.detail_contains = val;
+                                pos = (vend == std::string::npos) ? acc.size() : vend + 1;
+                            }
+                            if (!step.action.empty()) rule.steps.push_back(step);
+                        }
+                        continue;
+                    }
+                }
+                continue;
+            }
+
+            size_t eq = trimmed.find('=');
+            if (eq == std::string::npos) continue;
+            std::string key = TrimStr2(trimmed.substr(0, eq));
+            std::string val = Unquote2(TrimStr2(trimmed.substr(eq + 1)));
+            if (key == "family") rule.family = val;
+            else if (key == "severity") rule.severity = std::stoi(val);
+            else if (key == "mode") rule.mode = val;
+            else if (key == "min_match") rule.min_match = std::stoi(val);
+            else if (key == "max_interval") rule.max_interval = std::stoi(val);
+        }
+
+        if (!rule.family.empty() && !rule.steps.empty()) {
+            rules.push_back(rule);
+        }
+    }
+    return rules;
+}
+
+static std::vector<FamilyChain> BuildFamilyChainsFromToml(const std::vector<SandboxTomlRule>& tomlRules) {
+    std::vector<FamilyChain> chains;
+    for (const auto& tr : tomlRules) {
+        FamilyChain fc;
+        fc.family = tr.family;
+        fc.severity = tr.severity;
+        fc.min_match = tr.min_match;
+        fc.ordered = (tr.mode != "behavior");  // mode="behavior" 时按行为匹配(仅需条件满足)
+        for (const auto& step : tr.steps) {
+            ChainStep cs;
+            cs.action = step.action;
+            cs.max_interval = tr.max_interval;
+            // 捕获 action 副本，避免在 lambda 内引用未捕获的局部变量 cs
+            std::string action = step.action;
+            std::string pat = ToLower(step.pattern);
+            std::string pc = ToLower(step.path_contains);
+            std::string pe = ToLower(step.path_endswith);
+            std::string dc = ToLower(step.detail_contains);
+            cs.matcher = [action, pat, pc, pe, dc](const BehaviorRecord& r) -> bool {
+                if (r.action != action) return false;
+                std::string targ = ToLower(r.target);
+                std::string detl = ToLower(r.details);
+                // "|" 分隔的多备选：任一命中即算命中（忽略空备选）
+                auto anyIn = [](const std::string& field, const std::string& hay) -> bool {
+                    std::istringstream ss(field);
+                    std::string alt;
+                    while (std::getline(ss, alt, '|')) {
+                        if (!alt.empty() && hay.find(alt) != std::string::npos) return true;
+                    }
+                    return false;
+                };
+                auto anyEnds = [](const std::string& field, const std::string& hay) -> bool {
+                    std::istringstream ss(field);
+                    std::string alt;
+                    while (std::getline(ss, alt, '|')) {
+                        if (!alt.empty() && hay.size() >= alt.size() &&
+                            hay.compare(hay.size() - alt.size(), alt.size(), alt) == 0) return true;
+                    }
+                    return false;
+                };
+                if (!pat.empty() && !(anyIn(pat, targ) || anyIn(pat, detl))) return false;
+                if (!pc.empty() && !anyIn(pc, targ)) return false;
+                if (!pe.empty() && !anyEnds(pe, targ)) return false;
+                if (!dc.empty() && !anyIn(dc, detl)) return false;
+                return true;
+            };
+            fc.steps.push_back(cs);
+        }
+        chains.push_back(fc);
+    }
+    return chains;
+}
+
+} // end anonymous
+
 
 /* ============================================================
  *  Interpreter state
@@ -2876,11 +3152,23 @@ private:
 
     class PsExprParser {
     public:
-        PsExprParser(const std::string& expr, InterpreterState& st)
-            : lex_(expr), st_(st) { cur_ = lex_.Next(); }
+        PsExprParser(const std::string& expr, InterpreterState& st, int depth = 0)
+            : lex_(expr), st_(st), depth_(depth) {
+            // Guard against excessively large expressions to prevent stack overflow.
+            if (expr.size() > 512 * 1024) {
+                st_.Log("PsExprParser expression too large, aborting");
+                cur_ = {PsToken::End, ""};
+                return;
+            }
+            cur_ = lex_.Next();
+        }
 
         std::string Parse() {
-            return ParseExpr();
+            if (depth_ > 32) {
+                st_.Log("PsExprParser recursion limit exceeded");
+                return "";
+            }
+            return ParseExpr(depth_);
         }
 
     private:
@@ -2888,25 +3176,33 @@ private:
             if (cur_.type == t) cur_ = lex_.Next();
         }
 
-        std::string ParseExpr() {
-            std::string left = ParseTerm();
+        std::string ParseExpr(int depth = 0) {
+            std::string left = ParseTerm(depth + 1);
             while (cur_.type == PsToken::Plus || cur_.type == PsToken::Minus) {
                 PsToken::Type op = cur_.type;
                 Eat(op);
-                std::string right = ParseTerm();
+                std::string right = ParseTerm(depth + 1);
                 if (op == PsToken::Plus) left = left + right;
                 // Minus not needed for current obfuscation patterns.
             }
             return left;
         }
 
-        std::string ParseTerm() {
-            return ParsePostfix();
+        std::string ParseTerm(int depth = 0) {
+            if (depth > 32) {
+                st_.Log("PsExprParser term depth limit exceeded");
+                return "";
+            }
+            return ParsePostfix(depth + 1);
         }
 
-        std::string ParsePostfix() {
-            std::string base = ParseAtom();
+        std::string ParsePostfix(int depth = 0) {
+            std::string base = ParseAtom(depth + 1);
             while (true) {
+                if (depth + 2 > 64) {
+                    st_.Log("PsExprParser postfix chain depth limit exceeded");
+                    break;
+                }
                 if (cur_.type == PsToken::ColonColon) {
                     Eat(PsToken::ColonColon);
                     if (cur_.type != PsToken::Ident) break;
@@ -2914,7 +3210,7 @@ private:
                     Eat(PsToken::Ident);
                     base = base + "::" + member;
                     if (cur_.type == PsToken::LParen) {
-                        std::vector<std::string> args = ParseArgList();
+                        std::vector<std::string> args = ParseArgList(depth + 1);
                         base = EvalMethod(base, args);
                     }
                 } else if (cur_.type == PsToken::Dot) {
@@ -2924,16 +3220,16 @@ private:
                     Eat(PsToken::Ident);
                     base = base + "." + member;
                     if (cur_.type == PsToken::LParen) {
-                        std::vector<std::string> args = ParseArgList();
+                        std::vector<std::string> args = ParseArgList(depth + 1);
                         base = EvalMethod(base, args);
                     }
                 } else if (cur_.type == PsToken::Call) {
                     Eat(PsToken::Call);
                     if (cur_.type == PsToken::LParen) {
                         Eat(PsToken::LParen);
-                        std::string v = ParseExpr();
+                        std::string v = ParseExpr(depth + 1);
                         Eat(PsToken::RParen);
-                        base = EvaluateExpression(st_, v);
+                        base = EvaluateExpression(st_, v, depth + 1);
                     }
                 } else {
                     break;
@@ -2942,7 +3238,11 @@ private:
             return base;
         }
 
-        std::string ParseAtom() {
+        std::string ParseAtom(int depth = 0) {
+            if (depth > 32) {
+                st_.Log("PsExprParser atom depth limit exceeded");
+                return "";
+            }
             if (cur_.type == PsToken::String) {
                 std::string v = cur_.text;
                 Eat(PsToken::String);
@@ -2970,7 +3270,7 @@ private:
             }
             if (cur_.type == PsToken::LParen) {
                 Eat(PsToken::LParen);
-                std::string v = ParseExpr();
+                std::string v = ParseExpr(depth + 1);
                 Eat(PsToken::RParen);
                 return v;
             }
@@ -2979,14 +3279,14 @@ private:
             return v;
         }
 
-        std::vector<std::string> ParseArgList() {
+        std::vector<std::string> ParseArgList(int depth = 0) {
             std::vector<std::string> args;
             Eat(PsToken::LParen);
             if (cur_.type != PsToken::RParen) {
-                args.push_back(ParseExpr());
+                args.push_back(ParseExpr(depth + 1));
                 while (cur_.type == PsToken::Comma) {
                     Eat(PsToken::Comma);
-                    args.push_back(ParseExpr());
+                    args.push_back(ParseExpr(depth + 1));
                 }
             }
             Eat(PsToken::RParen);
@@ -3013,6 +3313,7 @@ private:
         PsLexer lex_;
         InterpreterState& st_;
         PsToken cur_;
+        int depth_;
     };
 
     // Find matching closing paren from start, accounting for quotes and nested parens.
@@ -3036,7 +3337,16 @@ private:
     // e.g. &("Get-Item") ("Variable:8Kb1") -> value of Variable:8Kb1
     // e.g. ."Get-Item" ('Variable:8Kb1') -> value of Variable:8Kb1
     // e.g. .get-ITEM 'Variable:8Kb1' -> value of Variable:8Kb1
-    static std::string EvaluatePsCallOp(InterpreterState& st, const std::string& expr) {
+    static std::string EvaluatePsCallOp(InterpreterState& st, const std::string& expr, int depth = 0) {
+        // Guard against excessively large expressions.
+        if (expr.size() > 512 * 1024) {
+            st.Log("EvaluatePsCallOp expression too large");
+            return "";
+        }
+        if (depth > 32) {
+            st.Log("EvaluatePsCallOp recursion limit exceeded");
+            return "";
+        }
         auto isCommandChar = [](char c) {
             return std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' || c == ':' || c == '.';
         };
@@ -3080,7 +3390,7 @@ private:
                     size_t paren_end = FindMatchingParen(expr, i + 2);
                     if (paren_end == std::string::npos) { result.push_back(expr[i]); ++i; continue; }
                     std::string cmd_expr = Trim(expr.substr(i + 2, paren_end - i - 2));
-                    std::string cmd = EvaluateExpression(st, cmd_expr);
+                    std::string cmd = EvaluateExpression(st, cmd_expr, depth + 1);
                     cmd = RemoveQuotes(cmd);
                     // Look for arguments after the closing paren.
                     size_t args_start = paren_end + 1;
@@ -3210,7 +3520,21 @@ private:
         return cmd;
     }
 
-    static std::string EvaluateExpression(InterpreterState& st, std::string expr) {
+    static std::string EvaluateExpression(InterpreterState& st, std::string expr, int depth = 0) {
+        // Bounds interpreter/parser recursion.  Deeply-obfuscated payloads with
+        // nested parens / call chains previously overflowed the stack (crash
+        // surfaced inside Trim()); cap nesting depth and bail out gracefully.
+        // Use a conservative limit since this function is called recursively
+        // from multiple paths (PsExprParser, EvaluatePsCallOp, ExpandPsDotNetMethods).
+        if (depth > 32) {
+            st.Log("EvalExpr recursion limit exceeded");
+            return expr;
+        }
+        // Guard against excessively large expressions that would cause heap/stack overflow.
+        if (expr.size() > 2 * 1024 * 1024) {  // 2 MB hard limit
+            st.Log("EvalExpr expression too large");
+            return expr;
+        }
         expr = Trim(expr);
         if (expr.empty()) return "";
 
@@ -3220,8 +3544,15 @@ private:
         // Iteratively apply all transformations until the expression stabilizes.
         // This is needed because resolving one pattern (e.g. ::FromBase64String)
         // may reveal new patterns (e.g. ::GetString) that need further processing.
+        // Cap both rounds and string size to prevent unbounded growth (heap exhaustion
+        // / stack overflow that surfaces inside Trim()).
         int max_rounds = 100;
+        const size_t kMaxExprLen = 2 * 1024 * 1024; // 2 MiB per-round cap
         while (max_rounds-- > 0) {
+            if (expr.size() > kMaxExprLen) {
+                st.Log("EvalExpr string too large, aborting");
+                break;
+            }
             std::string prev = expr;
 
             // Strip outer parens if the whole expression is wrapped in balanced parens.
@@ -3301,7 +3632,7 @@ private:
 
             // Handle &(...) and .(...) call operators.
             if (expr.find("&(") != std::string::npos || expr.find(".(") != std::string::npos) {
-                try { expr = EvaluatePsCallOp(st, expr); } catch (...) {}
+                try { expr = EvaluatePsCallOp(st, expr, depth + 1); } catch (...) {}
             }
 
             // Strip leftover (prefix) patterns after call operator resolution.
@@ -3320,7 +3651,7 @@ private:
 
             // Handle ::FromBase64String(...) and ::GetString(...) patterns.
             try {
-                expr = ExpandPsDotNetMethods(st, expr);
+                expr = ExpandPsDotNetMethods(st, expr, depth + 1);
             } catch (...) {}
 
             // Handle [Type]typeName - extract type name from type accelerator.
@@ -3344,7 +3675,7 @@ private:
             // Handle [Type]::Method() via PsExprParser.
             if (expr.find('[') != std::string::npos || expr.find("::") != std::string::npos) {
                 try {
-                    PsExprParser parser(expr, st);
+                    PsExprParser parser(expr, st, depth + 1);
                     std::string parsed = parser.Parse();
                     if (!parsed.empty() && parsed != expr) { expr = parsed; continue; }
                 } catch (...) {}
@@ -3361,7 +3692,16 @@ private:
 
     // Expand .NET method calls: ::FromBase64String(...) and ::GetString(...)
     // Uses manual parenthesis matching to handle complex nested arguments.
-    static std::string ExpandPsDotNetMethods(InterpreterState& st, const std::string& expr) {
+    static std::string ExpandPsDotNetMethods(InterpreterState& st, const std::string& expr, int depth = 0) {
+        // Guard against excessively large expressions.
+        if (expr.size() > 512 * 1024) {
+            st.Log("ExpandPsDotNetMethods expression too large");
+            return expr;
+        }
+        if (depth > 32) {
+            st.Log("ExpandPsDotNetMethods recursion limit exceeded");
+            return expr;
+        }
         std::string s = expr;
 
         // Step 0: Normalize quoted identifiers after :: and .
@@ -3425,7 +3765,7 @@ private:
                 st.Log("DotNet FromBase64 pos=" + std::to_string(pos) + " open=" + std::to_string(open_paren) + " close=" + std::to_string(close_paren) + " s_len=" + std::to_string(s.size()));
                 st.Log("DotNet FromBase64 arg_len=" + std::to_string(arg.size()) + " arg=[" + arg.substr(0,100) + (arg.size()>100?"...":"") + "]");
                 // Recursively evaluate the argument.
-                std::string evaluated = EvaluateExpression(st, arg);
+                std::string evaluated = EvaluateExpression(st, arg, depth + 1);
                 evaluated = RemoveQuotes(evaluated);
                 st.Log("DotNet FromBase64 evaluated_len=" + std::to_string(evaluated.size()) + " evaluated=[" + evaluated.substr(0,100) + (evaluated.size()>100?"...":"") + "]");
                 // Try to base64-decode the evaluated argument.
@@ -3505,7 +3845,7 @@ private:
                     continue;
                 }
                 std::string arg = Trim(s.substr(after_method_close + 1, invoke_close - after_method_close - 1));
-                std::string evaluated = EvaluateExpression(st, arg);
+                std::string evaluated = EvaluateExpression(st, arg, depth + 1);
                 evaluated = RemoveQuotes(evaluated);
                 std::string decoded;
                 if (Base64Decode(evaluated, decoded) && !decoded.empty()) {
@@ -3542,7 +3882,7 @@ private:
 
                 std::string arg = Trim(s.substr(open_paren + 1, close_paren - open_paren - 1));
                 st.Log("DotNet GetString arg_len=" + std::to_string(arg.size()) + " arg=[" + arg.substr(0,100) + (arg.size()>100?"...":"") + "]");
-                std::string evaluated = EvaluateExpression(st, arg);
+                std::string evaluated = EvaluateExpression(st, arg, depth + 1);
                 evaluated = RemoveQuotes(evaluated);
                 st.Log("DotNet GetString evaluated_len=" + std::to_string(evaluated.size()) + " evaluated=[" + evaluated.substr(0,100) + (evaluated.size()>100?"...":"") + "]");
                 size_t prefix_start = FindDotNetPrefixStart(s, gs_pos);
@@ -3575,14 +3915,15 @@ private:
     static size_t FindMatchingOpenParen(const std::string& s, size_t close_pos) {
         int depth = 1;
         bool in_sq = false, in_dq = false;
-        for (size_t j = close_pos; j-- > 0; ) {
-            char c = s[j];
+        // Use signed index to avoid size_t underflow when j reaches 0.
+        for (long j = static_cast<long>(close_pos); j > 0; --j) {
+            char c = s[static_cast<size_t>(j)];
             if (in_sq) { if (c == '\'') in_sq = false; continue; }
             if (in_dq) { if (c == '"') in_dq = false; continue; }
             if (c == '\'') { in_sq = true; continue; }
             if (c == '"') { in_dq = true; continue; }
             if (c == ')') { ++depth; continue; }
-            if (c == '(') { if (--depth == 0) return j; }
+            if (c == '(') { if (--depth == 0) return static_cast<size_t>(j); }
         }
         return std::string::npos;
     }
@@ -3599,14 +3940,14 @@ private:
         if (s[i - 1] == ']') {
             int depth = 1;
             bool in_sq = false, in_dq = false;
-            for (size_t j = i - 1; j-- > 0; ) {
-                char c = s[j];
+            for (long j = static_cast<long>(i) - 1; j > 0; --j) {
+                char c = s[static_cast<size_t>(j)];
                 if (in_sq) { if (c == '\'') in_sq = false; continue; }
                 if (in_dq) { if (c == '"') in_dq = false; continue; }
                 if (c == '\'') { in_sq = true; continue; }
                 if (c == '"') { in_dq = true; continue; }
                 if (c == ']') { ++depth; continue; }
-                if (c == '[') { if (--depth == 0) return j; }
+                if (c == '[') { if (--depth == 0) return static_cast<size_t>(j); }
             }
             return i - 1;
         }
@@ -3675,6 +4016,8 @@ private:
     }
 
     static std::string ExpandVariablesOnce(InterpreterState& st, std::string expr) {
+        // Guard against excessively large expressions to prevent regex engine overflow.
+        if (expr.size() > 256 * 1024) return expr;
         std::regex varre(R"(\$\{?([a-zA-Z0-9_`]+)\}?)");
         std::string out;
         size_t last_end = 0;
@@ -3777,7 +4120,7 @@ private:
             Contains(lp, "cscript") || Contains(lp, "mshta")) {
             if (Contains(lp, "powershell"))
             {
-                InterpreterState cst(st.env, st.recorder, st.log, cpid, st.pid, "child", st.globals, 0);
+                InterpreterState cst(st.env, st.recorder, st.log, cpid, st.pid, "child", st.globals, st.depth + 1);
                 PowershellInterpreter::Execute(cst, args);
             }
             else
@@ -4346,7 +4689,7 @@ private:
                 if (Base64Decode(enc, decoded)) {
                     st.Log("CMD launched encoded PowerShell");
                     InterpreterState cst(st.env, st.recorder, st.log, st.env.NewPid(), st.pid,
-                                         "ps", st.globals);
+                                         "ps", st.globals, st.depth + 1);
                     PowershellInterpreter::Execute(cst, decoded);
                 }
             }
@@ -4357,7 +4700,7 @@ private:
         if (StartsWith(low, "powershell")) {
             std::string args = ExpandVars(st, Trim(line.substr(10)));
             InterpreterState cst(st.env, st.recorder, st.log, st.env.NewPid(), st.pid, "ps",
-                                 st.globals);
+                                 st.globals, st.depth + 1);
             PowershellInterpreter::Execute(cst, args);
             return;
         }
@@ -4541,9 +4884,10 @@ private:
             st.Log("FOR /L bad range: " + line);
             return;
         }
-        long long start = std::stoll(Trim(parts[0]));
-        long long step = std::stoll(Trim(parts[1]));
-        long long end = std::stoll(Trim(parts[2]));
+        long long start = 0, step = 1, end = 0;
+        try { start = std::stoll(Trim(parts[0])); } catch (...) { st.Log("FOR /L bad start"); return; }
+        try { step  = std::stoll(Trim(parts[1])); } catch (...) { st.Log("FOR /L bad step");  return; }
+        try { end   = std::stoll(Trim(parts[2])); } catch (...) { st.Log("FOR /L bad end");   return; }
 
         std::string body = Trim(line.substr(do_pos + 4));
         if (StartsWith(body, "(") && EndsWith(body, ")")) {
@@ -4833,8 +5177,9 @@ private:
         std::regex subre(R"(~(-?\d+)(?:,(-?\d+))?)");
         std::smatch m;
         if (std::regex_search(spec, m, subre)) {
-            int start = std::stoi(m[1].str());
-            int len = m[2].matched ? std::stoi(m[2].str()) : (int)val.size();
+            int start = 0, len = 0;
+            try { start = std::stoi(m[1].str()); } catch (...) { return val; }
+            try { len = m[2].matched ? std::stoi(m[2].str()) : (int)val.size(); } catch (...) { len = (int)val.size(); }
             if (start < 0) start = (int)val.size() + start;
             if (start < 0) start = 0;
             if (start > (int)val.size()) return "";
@@ -4860,6 +5205,8 @@ private:
     }
 
     static std::string ExpandVars(InterpreterState& st, std::string s) {
+        // Guard against excessively large strings to prevent regex engine overflow.
+        if (s.size() > 256 * 1024) return s;
         auto expand_with_regex =
             [&st](const std::string& input,
                 const std::regex& re,
@@ -5143,7 +5490,8 @@ private:
                         cpid,
                         st.pid,
                         "cmd",
-                        st.globals
+                        st.globals,
+                        st.depth + 1
                     );
 
                     CmdInterpreter::Execute(
@@ -5169,7 +5517,7 @@ private:
 
 void ExecuteCmdChild(InterpreterState& st, const std::string& args, int cpid)
 {
-    InterpreterState cst(st.env, st.recorder, st.log, cpid, st.pid, "child", st.globals);
+    InterpreterState cst(st.env, st.recorder, st.log, cpid, st.pid, "child", st.globals, st.depth + 1);
     CmdInterpreter::Execute(cst, args);
 }
 
@@ -5521,6 +5869,13 @@ static std::string JsCallMethod(JsRuntime& rt, const std::string& obj_path,
 }
 
 static std::string JsEvalPrimary(JsRuntime& rt, const std::string& expr, int depth = 0) {
+    // Unified depth limit to match JsEvalExpr.
+    if (depth > 16) {
+        rt.Log("JsEvalPrimary recursion limit exceeded");
+        return "";
+    }
+    // Strict size guard: Trim creates a copy.
+    if (expr.size() > 128 * 1024) return "";
     std::string s = Trim(expr);
     if (s.empty()) return "";
 
@@ -5563,7 +5918,7 @@ static std::string JsEvalPrimary(JsRuntime& rt, const std::string& expr, int dep
             if (unquoted != inner) {
                 rt.Log("JS eval payload detected");
                 rt.Emit("IEXExecute", unquoted, "JS eval payload");
-                return JsEvalExpr(rt, unquoted, depth + 1);
+                return JsEvalExpr(rt, unquoted, depth + 2);
             }
         }
     }
@@ -5597,153 +5952,119 @@ static std::string JsEvalPrimary(JsRuntime& rt, const std::string& expr, int dep
 }
 
 static std::string JsEvalExpr(JsRuntime& rt, const std::string& expr, int depth) {
-    // Guard against stack overflow from deeply nested expressions.
-    // Depth > 64 is almost certainly malicious or malformed input.
-    if (depth > 64) {
-        rt.Log("JsEvalExpr recursion limit exceeded");
-        return "";
-    }
-    std::string s = Trim(expr);
-    if (s.empty()) return "";
+    // Use heap allocation to avoid stack overflow from deep recursion.
+    // Convert recursive calls to iterative processing with explicit stack.
+    struct CallFrame {
+        const std::string* expr;
+        int depth;
+        std::string* result;
+    };
 
-    while (!s.empty() && (s.back() == ';' || s.back() == ' ' || s.back() == '\t'))
-        s.pop_back();
+    std::string result;
+    std::vector<CallFrame> call_stack;
+    call_stack.reserve(32);
+    call_stack.push_back({&expr, depth, &result});
 
-    if (StartsWith(s, "var ") || StartsWith(s, "let ") || StartsWith(s, "const ")) {
-        size_t eq = s.find('=');
-        if (eq != std::string::npos) {
-            std::string var_name = Trim(s.substr(4, eq - 4));
-            std::string val_expr = s.substr(eq + 1);
-            std::string val = JsEvalExpr(rt, val_expr, depth + 1);
-            rt.vars[var_name] = val;
-            return val;
+    while (!call_stack.empty()) {
+        CallFrame frame = call_stack.back();
+        call_stack.pop_back();
+
+        const std::string* current_expr = frame.expr;
+        int current_depth = frame.depth;
+        std::string* current_result = frame.result;
+
+        // Strict unified depth limit to prevent stack overflow.
+        if (current_depth > 16) {
+            rt.Log("JsEvalExpr recursion limit exceeded");
+            *current_result = "";
+            continue;
         }
-        return "";
-    }
+        // Strict size guard: limit to 128KB.
+        if (current_expr->size() > 128 * 1024) {
+            rt.Log("JsEvalExpr expression too large");
+            *current_result = "";
+            continue;
+        }
 
-    size_t dot_pos = s.rfind('.');
-    if (dot_pos != std::string::npos) {
-        std::string left = Trim(s.substr(0, dot_pos));
-        std::string right = Trim(s.substr(dot_pos + 1));
+        // Use heap-allocated string for Trim result to reduce stack pressure.
+        std::string* s = new std::string(Trim(*current_expr));
+        if (s->empty()) {
+            delete s;
+            *current_result = "";
+            continue;
+        }
 
-        if (right.find('(') != std::string::npos) {
-            size_t paren = right.find('(');
-            std::string method = Trim(right.substr(0, paren));
-            std::string args_str = right.substr(paren + 1);
-            size_t close = args_str.rfind(')');
-            if (close != std::string::npos) args_str = args_str.substr(0, close);
+        while (!s->empty() && (s->back() == ';' || s->back() == ' ' || s->back() == '\t'))
+            s->pop_back();
 
-            std::vector<std::string> args;
-            size_t cur = 0, depth = 0, start = 0;
-            for (size_t i = 0; i < args_str.size(); ++i) {
-                if (args_str[i] == '(') ++depth;
-                else if (args_str[i] == ')') --depth;
-                else if (args_str[i] == ',' && depth == 0) {
-                    args.push_back(Trim(args_str.substr(start, i - start)));
-                    start = i + 1;
+        if (StartsWith(*s, "var ") || StartsWith(*s, "let ") || StartsWith(*s, "const ")) {
+            size_t eq = s->find('=');
+            if (eq != std::string::npos) {
+                std::string var_name = Trim(s->substr(4, eq - 4));
+                std::string val_expr = s->substr(eq + 1);
+                std::string val = JsEvalExpr(rt, val_expr, current_depth + 1);
+                rt.vars[var_name] = val;
+                *current_result = val;
+            } else {
+                *current_result = "";
+            }
+            delete s;
+            continue;
+        }
+
+        size_t dot_pos = s->rfind('.');
+        if (dot_pos != std::string::npos) {
+            std::string left = Trim(s->substr(0, dot_pos));
+            std::string right = Trim(s->substr(dot_pos + 1));
+
+            if (right.find('(') != std::string::npos) {
+                size_t paren = right.find('(');
+                std::string method = Trim(right.substr(0, paren));
+                std::string args_str = right.substr(paren + 1);
+                size_t close = args_str.rfind(')');
+                if (close != std::string::npos) args_str = args_str.substr(0, close);
+
+                std::vector<std::string> args;
+                size_t arg_depth = 0, arg_start = 0;
+                for (size_t i = 0; i < args_str.size(); ++i) {
+                    if (args_str[i] == '(') ++arg_depth;
+                    else if (args_str[i] == ')') --arg_depth;
+                    else if (args_str[i] == ',' && arg_depth == 0) {
+                        args.push_back(Trim(args_str.substr(arg_start, i - arg_start)));
+                        arg_start = i + 1;
+                    }
                 }
-            }
-            args.push_back(Trim(args_str.substr(start)));
+                args.push_back(Trim(args_str.substr(arg_start)));
 
-            std::string obj = JsEvalExpr(rt, left, depth + 1);
-            for (std::string& a : args) a = JsEvalExpr(rt, a, depth + 1);
-            return JsCallMethod(rt, obj, method, args);
-        } else {
-            std::string obj = JsEvalExpr(rt, left, depth + 1);
-            return JsGetProperty(rt, obj, right);
-        }
-    }
-
-    size_t paren = s.find('(');
-    if (paren != std::string::npos) {
-        std::string name = Trim(s.substr(0, paren));
-        std::string args_str = s.substr(paren + 1);
-        size_t close = args_str.rfind(')');
-        if (close != std::string::npos) args_str = args_str.substr(0, close);
-
-        if (ToLower(name) == "eval") {
-            size_t end_quote = args_str.find('"');
-            if (end_quote != std::string::npos) {
-                std::string payload = JsDecodeString(Trim(args_str.substr(0, end_quote + 1)));
-                rt.Log("JS eval detected");
-                rt.Emit("IEXExecute", payload, "JS eval");
-                return JsEvalExpr(rt, payload, depth + 1);
-            }
-            std::string payload = JsDecodeString(Trim(args_str));
-            rt.Log("JS eval detected");
-            rt.Emit("IEXExecute", payload, "JS eval");
-            return JsEvalExpr(rt, payload, depth + 1);
-        }
-
-        if (ToLower(name) == "string.fromcharcode") {
-            std::string decoded = JsCharCodeDecode(args_str);
-            if (decoded != args_str) return decoded;
-        }
-
-        if (ToLower(name) == "atob") {
-            std::string decoded = JsBase64Decode(JsDecodeString(Trim(args_str)));
-            if (decoded != args_str) return decoded;
-        }
-
-        if (name == "unescape") {
-            std::string inner = JsDecodeString(Trim(args_str));
-            std::string out;
-            for (size_t i = 0; i < inner.size(); ++i) {
-                if (inner[i] == '%' && i + 2 < inner.size()) {
-                    std::string hex = inner.substr(i + 1, 2);
-                    char val = static_cast<char>(std::stoi(hex, nullptr, 16));
-                    out.push_back(val);
-                    i += 2;
-                } else {
-                    out.push_back(inner[i]);
+                std::string obj = JsEvalExpr(rt, left, current_depth + 1);
+                for (size_t i = 0; i < args.size(); ++i) {
+                    args[i] = JsEvalExpr(rt, args[i], current_depth + 1);
                 }
+                *current_result = JsCallMethod(rt, obj, method, args);
+            } else {
+                std::string obj = JsEvalExpr(rt, left, current_depth + 1);
+                *current_result = JsGetProperty(rt, obj, right);
             }
-            return out;
+            delete s;
+            continue;
         }
 
-        std::vector<std::string> args;
-        size_t cur = 0, depth = 0, start = 0;
-        for (size_t i = 0; i < args_str.size(); ++i) {
-            if (args_str[i] == '(') ++depth;
-            else if (args_str[i] == ')') --depth;
-            else if (args_str[i] == ',' && depth == 0) {
-                args.push_back(Trim(args_str.substr(start, i - start)));
-                start = i + 1;
-            }
-        }
-        args.push_back(Trim(args_str.substr(start)));
-
-        if (StartsWith(ToLower(s), "new activexobject(")) {
-            std::string obj_name = JsDecodeString(Trim(args_str));
-            rt.objects[obj_name] = "";
-            rt.Emit("ActiveXObject", obj_name, "JS ActiveXObject creation");
-            return obj_name;
-        }
-
-        for (std::string& a : args) a = JsEvalExpr(rt, a, depth + 1);
-        return JsCallMethod(rt, name, name, args);
+        // Direct evaluation for simple cases
+        *current_result = JsEvalPrimary(rt, *s, current_depth + 1);
+        delete s;
     }
 
-    if (StartsWith(s, "function ")) {
-        return "";
-    }
-
-    if (StartsWith(s, "if ") || StartsWith(s, "if(")) {
-        return "";
-    }
-
-    if (StartsWith(s, "while ") || StartsWith(s, "while(")) {
-        return "";
-    }
-
-    if (StartsWith(s, "for ") || StartsWith(s, "for(")) {
-        return "";
-    }
-
-    return JsEvalPrimary(rt, s, depth + 1);
+    return result;
 }
 
 static std::string JsEvalStatement(JsRuntime& rt, const std::string& stmt, int depth = 0) {
+    // Unified depth limit to match JsEvalExpr and JsEvalPrimary.
+    if (depth > 16) {
+        rt.Log("JsEvalStatement recursion limit exceeded");
+        return "";
+    }
+    // Strict size guard: Trim creates a copy.
+    if (stmt.size() > 128 * 1024) return "";
     std::string s = Trim(stmt);
     if (s.empty()) return "";
 
@@ -5810,7 +6131,7 @@ class Sandbox::Impl {
 public:
     Impl() {}
 
-    DetectionResult Analyze(const std::string& script_content) {
+    DetectionResult Analyze(const std::string& script_content, const std::string& fileExt) {
         DetectionResult res;
         try {
             VirtualEnvironment env;
@@ -5825,35 +6146,37 @@ public:
             std::string cleaned = script_content;
             log.push_back("Deobfuscation rounds finished");
 
-            // Dispatch based on dominant language.
-            bool has_ps = Contains(ToLower(cleaned), "powershell") || Contains(cleaned, "$") ||
-                          Contains(ToLower(cleaned), "invoke-") || Contains(ToLower(cleaned), "iex");
-            bool has_cmd = Contains(ToLower(cleaned), "set ") || Contains(ToLower(cleaned), "cmd ") ||
-                           Contains(ToLower(cleaned), "@echo") || Contains(ToLower(cleaned), "%");
-            bool has_js = Contains(ToLower(cleaned), "wscript") || Contains(ToLower(cleaned), "wshell") ||
-                          Contains(ToLower(cleaned), "activexobject") || Contains(ToLower(cleaned), "adodb") ||
-                          Contains(ToLower(cleaned), "xmlhttp") || Contains(ToLower(cleaned), "scripting.filesystemobject") ||
-                          Contains(ToLower(cleaned), "new activexobject") || Contains(ToLower(cleaned), "createobject") ||
-                          Contains(cleaned, ".js") || Contains(ToLower(cleaned), "language=\"javascript\"") ||
-                          Contains(ToLower(cleaned), "type=\"text/javascript\"");
+            // 完全信任后缀名，不做内容检测兜底
+            // 如果后缀名不符合已知脚本格式，直接跳过
+            std::string extLower = fileExt;
+            std::transform(extLower.begin(), extLower.end(), extLower.begin(),
+                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            // 去掉前导点
+            if (!extLower.empty() && extLower[0] == '.') extLower = extLower.substr(1);
 
-            if (has_js && !has_ps && !has_cmd) {
-                JsInterpreter::Execute(st, cleaned);
-            } else if (has_cmd && !has_ps && !has_js) {
+            bool extKnown = false;
+            if (extLower == "ps1" || extLower == "psm1" || extLower == "psd1" ||
+                extLower == "ps1xml" || extLower == "psc1" || extLower == "cdxml") {
+                JsInterpreter::Execute(st, cleaned);  // PS detector handles this
+                extKnown = true;
+            } else if (extLower == "bat" || extLower == "cmd") {
                 CmdInterpreter::Execute(st, cleaned);
-            } else if (has_ps && !has_cmd && !has_js) {
-                PowershellInterpreter::Execute(st, cleaned);
-            } else {
-                // Mixed: prefer JS/PS unless there is a strong CMD marker at the start.
-                std::string start = Trim(cleaned);
-                if (StartsWith(ToLower(start), "@echo") ||
-                    StartsWith(ToLower(start), "cmd ") ||
-                    Contains(ToLower(start), "cmd /c"))
-                    CmdInterpreter::Execute(st, cleaned);
-                else if (has_js)
-                    JsInterpreter::Execute(st, cleaned);
-                else
-                    PowershellInterpreter::Execute(st, cleaned);
+                extKnown = true;
+            } else if (extLower == "vbs" || extLower == "vbe") {
+                JsInterpreter::Execute(st, cleaned);  // VBS uses JsInterpreter
+                extKnown = true;
+            } else if (extLower == "js" || extLower == "jse" || extLower == "wsf") {
+                JsInterpreter::Execute(st, cleaned);
+                extKnown = true;
+            }
+
+            // 未知后缀直接跳过，不做内容检测
+            if (!extKnown) {
+                res.malicious = false;
+                res.family = "BSD/Clean";
+                res.severity_score = 0;
+                res.execution_log.push_back("未知文件后缀，跳过分析: " + fileExt);
+                return res;
             }
 
             recorder.LinkRelated();
@@ -5914,8 +6237,40 @@ public:
 Sandbox::Sandbox() : d(std::make_unique<Impl>()) {}
 Sandbox::~Sandbox() = default;
 
-DetectionResult Sandbox::Analyze(const std::string& script_content) {
-    return d->Analyze(script_content);
+DetectionResult Sandbox::Analyze(const std::string& script_content, const std::string& fileExt) {
+    return d->Analyze(script_content, fileExt);
+}
+
+DetectionResult Sandbox::AnalyzeFile(const std::string& filePath) {
+    // Read file
+    std::ifstream file(filePath, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) {
+        DetectionResult res;
+        res.malicious = false;
+        res.family = "BSD/Error";
+        res.execution_log.push_back("无法打开文件: " + filePath);
+        return res;
+    }
+    std::streamsize fileSize = file.tellg();
+    if (fileSize > 20 * 1024 * 1024) {
+        file.close();
+        DetectionResult res;
+        res.malicious = false;
+        res.family = "BSD/Clean";
+        return res;
+    }
+    file.seekg(0, std::ios::beg);
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    file.close();
+
+    // Extract extension for language dispatch
+    std::string ext;
+    size_t dotPos = filePath.rfind('.');
+    if (dotPos != std::string::npos) {
+        ext = filePath.substr(dotPos);  // includes the dot, e.g. ".psd1"
+    }
+
+    return d->Analyze(content, ext);
 }
 
 } // namespace ScriptSandbox

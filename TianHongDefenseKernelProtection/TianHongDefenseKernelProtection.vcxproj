@@ -147,12 +147,13 @@
     <ClCompile Include="kernel\Main.c" />
     <ClCompile Include="kernel\PendingQueue.c" />
     <ClCompile Include="kernel\ProcessCallback.c" />
+    <ClCompile Include="kernel\DriverDllInject.c" />
     <ClCompile Include="kernel\RegistryCallback.c" />
     <ClCompile Include="kernel\ResponseSystem.c" />
-    <ClCompile Include="kernel\RingBuffer.c" />
     <ClCompile Include="kernel\Whitelist.c" />
     <ClCompile Include="kernel\BehaviorDynamicRules.c" />
     <ClCompile Include="kernel\BehaviorIndicatorDefs.c" />
+    <ClCompile Include="kernel\VulnerableDriver.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="kernel\BehaviorAnalysis.h" />
@@ -169,12 +170,14 @@
     <ClInclude Include="kernel\Main.h" />
     <ClInclude Include="kernel\PendingQueue.h" />
     <ClInclude Include="kernel\ProcessCallback.h" />
+    <ClInclude Include="kernel\injlib.h" />
     <ClInclude Include="kernel\RegistryCallback.h" />
     <ClInclude Include="kernel\ResponseSystem.h" />
     <ClInclude Include="kernel\RingBuffer.h" />
     <ClInclude Include="kernel\Whitelist.h" />
     <ClInclude Include="kernel\BehaviorDynamicRules.h" />
     <ClInclude Include="kernel\BehaviorIndicatorDefs.h" />
+    <ClInclude Include="kernel\VulnerableDriver.h" />
     <ClInclude Include="shared\Common.h" />
     <ClInclude Include="shared\Event.h" />
     <ClInclude Include="shared\Ioctl.h" />

@@ -29,6 +29,7 @@ public:
 	ElaToggleSwitch* pPEEngineSwitch;
 	ElaToggleSwitch* pSHA256EngineSwitch;
 	ElaToggleSwitch* pClamAVEngineSwitch;
+	ElaToggleSwitch* pScriptEngineSwitch;
 	ElaToggleSwitch* pHighSensitiveSwitch;
     ElaToggleSwitch* pExtraPEEngineSwitch;
 
@@ -44,7 +45,7 @@ public:
 	ElaTableView* pVirusTable;
 	QStandardItemModel* pVirusTableModel;
 
-	ElaScrollPageArea* spYaraEngineSwitch, * spPEEngineSwitch, * spSHA256EngineSwitch, * spClamAVEngineSwitch, * spHighSensitiveSwitch, * spExtraPEEngineSwitch;
+	ElaScrollPageArea* spYaraEngineSwitch, * spPEEngineSwitch, * spSHA256EngineSwitch, * spClamAVEngineSwitch, * spScriptEngineSwitch, * spHighSensitiveSwitch, * spExtraPEEngineSwitch;
 
 	ElaText* EngineMainTitle;
 
@@ -98,6 +99,7 @@ public:
     int m_quickScanPhase0Count = 0;             // 阶段0（进程扫描）的文件数
 
     bool m_bScanPreparing = false;              // 是否处于扫描准备阶段（收集文件列表期间），用于准备阶段立即响应终止扫描
+    quint64 m_scanGeneration = 0;               // 扫描代数：每次发起新扫描或准备阶段终止时自增，用于作废旧 watcher 回调，防止干扰新扫描
 
     void showQuickScanPhaseBar(bool show);
     void updateQuickScanPhaseCard(int index, const QString& status, bool scanning);

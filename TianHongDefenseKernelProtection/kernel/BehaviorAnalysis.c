@@ -19,6 +19,11 @@
 #define MEM_IMAGE 0x1000000
 #endif
 
+/* MEM_COMMIT — 已提交内存（Elastic shellcode-thread 判定条件之一） */
+#ifndef MEM_COMMIT
+#define MEM_COMMIT 0x1000
+#endif
+
 /* 外部 API 声明 */
 NTKERNELAPI UCHAR* PsGetProcessImageFileName(__in PEPROCESS Process);
 
@@ -158,6 +163,7 @@ static NTSTATUS (*g_pPsResumeProcess)(PEPROCESS) = NULL;
 static NTSTATUS (*g_pNtSuspendProcess)(HANDLE) = NULL;
 static NTSTATUS (*g_pNtResumeProcess)(HANDLE) = NULL;
 static NTSTATUS (*g_pNtSuspendThread)(HANDLE) = NULL;
+static NTSTATUS (*g_pNtGetContextThread)(HANDLE, PCONTEXT) = NULL;
 
 static VOID ResolveBehaviorApis(VOID)
 {
@@ -176,10 +182,15 @@ static VOID ResolveBehaviorApis(VOID)
     RtlInitUnicodeString(&name, L"NtSuspendThread");
     g_pNtSuspendThread = (NTSTATUS(*)(HANDLE))MmGetSystemRoutineAddress(&name);
 
-    DriverDbgPrint("[BA-API] PsSuspend=%p PsResume=%p NtSuspend=%p NtResume=%p NtSuspendThread=%p\n",
+    /* NtGetContextThread 由 ntoskrnl 导出（KeGetContextThread 已从现代 WDK 移除），
+     * 用于 trampoline 跳板检测的线程上下文 Rip 采样。 */
+    RtlInitUnicodeString(&name, L"NtGetContextThread");
+    g_pNtGetContextThread = (NTSTATUS(*)(HANDLE, PCONTEXT))MmGetSystemRoutineAddress(&name);
+
+    DriverDbgPrint("[BA-API] PsSuspend=%p PsResume=%p NtSuspend=%p NtResume=%p NtSuspendThread=%p NtGetContextThread=%p\n",
         g_pPsSuspendProcess, g_pPsResumeProcess,
         g_pNtSuspendProcess, g_pNtResumeProcess,
-        g_pNtSuspendThread);
+        g_pNtSuspendThread, g_pNtGetContextThread);
 }
 
 /* 判断是否为浏览器可执行名（仅文件名），用于对浏览器进程应用更严格的告警门槛 */
@@ -317,10 +328,12 @@ BA_BASELINE g_baBaselines[BA_MAX_BASELINES];
 INT g_baBaselineCount = 0;
 KSPIN_LOCK g_baBaselineLock;
 
-/* ── 文件释放跟踪（环形缓冲区）──
+/* ── 文件释放跟踪（环形缓冲区，堆分配）──
  * 记录每个进程创建的新文件（FILE_CREATED），用于威胁清除时删除。
- * 仅记录非系统目录的文件创建，减少开销。 */
-#define BA_MAX_DROPPED_FILES   512
+ * 仅记录非系统目录的文件创建，减少开销。
+ * 容量由 BA_MAX_DROPPED_FILES 决定，超出时覆盖前的记录通过
+ * SendRollbackLogRecord 上报主程序持久化到磁盘（溢出丢磁盘）。 */
+#define BA_MAX_DROPPED_FILES   2048                    /* 扩容：512 -> 2048 */
 #define BA_DROPPED_PATH_LEN    512  /* WCHAR count */
 
 typedef struct _BA_DROPPED_FILE {
@@ -330,20 +343,26 @@ typedef struct _BA_DROPPED_FILE {
     BOOLEAN  valid;
 } BA_DROPPED_FILE;
 
-static BA_DROPPED_FILE g_baDroppedFiles[BA_MAX_DROPPED_FILES];
+static BA_DROPPED_FILE* g_baDroppedFiles = NULL;       /* 堆分配 */
 static volatile LONG g_baDroppedFileIdx = 0;
 static KSPIN_LOCK g_baDroppedFileLock;
 
-/* ── 注册表操作回滚跟踪（环形缓冲区）──
+/* ── 注册表操作回滚跟踪（环形缓冲区，堆分配）──
  * 记录每个进程对注册表值的修改/删除，并备份修改前原始值，
- * 供用户选择 Block 时回滚（删除新增值 / 恢复被修改值）。 */
-static BA_REG_OP_RECORD g_baRegOps[BA_MAX_REG_OPS];
+ * 供用户选择 Block 时回滚（删除新增值 / 恢复被修改值）。
+ * 容量由 BA_MAX_REG_OPS 决定，超出时覆盖前的记录通过
+ * SendRollbackLogRecord 上报主程序持久化到磁盘（溢出丢磁盘）。 */
+static BA_REG_OP_RECORD* g_baRegOps = NULL;            /* 堆分配 */
 static volatile LONG g_baRegOpIdx = 0;
 static KSPIN_LOCK g_baRegOpLock;
 
 /* 注册表回调重入保护深度计数器：驱动自身发起的注册表访问会触发回调重入，
  * >0 时回调跳过记录与检测。定义于 BehaviorAnalysis.c，RegistryCallback.c 中 extern 使用。 */
 volatile LONG g_regDriverAccessDepth = 0;
+
+/* wpathToAscii: 将 WCHAR 路径转换为 ASCII（定义于文件后部），
+ * 供回滚记录溢出上报（BehaviorRecordDroppedFile / BehaviorRecordRegOp）提前使用。 */
+static void wpathToAscii(const WCHAR* wpath, USHORT wlen, CHAR* out, int maxChars);
 
 /* 进程树批量操作：同时挂起/恢复/终止的最大 PID 数 */
 #define BA_MAX_TREE_PIDS   64
@@ -395,7 +414,8 @@ typedef struct _BA_SIG_CACHE_ENTRY {
     BOOLEAN isSigned;
     BOOLEAN valid;
 } BA_SIG_CACHE_ENTRY;
-#define BA_SIG_CACHE_SIZE 64
+#define BA_SIG_CACHE_SIZE 2048  /* 大幅扩充：覆盖全部活跃进程 + 已退出进程的签名槽位，
+                                 * 支撑签名降级回滚、未签名 DLL 侧加载检测与长时历史追溯 */
 BA_SIG_CACHE_ENTRY g_baSigCache[BA_SIG_CACHE_SIZE];
 KSPIN_LOCK g_baSigCacheLock;
 
@@ -526,7 +546,7 @@ BOOLEAN isGenuineSystemProcess(int idx, const CHAR* imagePath)
 const DOUBLE g_baIndicatorScores[BA_MAX_INDICATORS] = {
     15.0, 20.0, 10.0,  3.0,  /* 0-3:   ProcFrom* (UNSIGNED 降为 3.0) */
     15.0, 20.0, 50.0, 40.0,  /* 4-7:   FileCreateSystemDir/Driver/StartupExe/DropFromTemp (SYSTEM_DIR 35→15, DRIVER 40→20) */
-    45.0, 40.0, 40.0, 35.0,  /* 8-11:  FileCreateDllHijack/EncryptedExt/RansomNote/DllSideLoad */
+    45.0, 40.0, 40.0, 70.0,  /* 8-11:  FileCreateDllHijack/EncryptedExt/RansomNote/DllSideLoad (侧载提升至70) */
     35.0, 30.0, 25.0, 30.0,  /* 12-15: FileBrowserCred/SelfDel/NetShare/InfAutorun */
     35.0, 45.0, 50.0,        /* 16-18: FileHostsModify/DiskRaw/ByovdDriver */
     25.0, 45.0, 50.0, 40.0,  /* 19-22: RegRunKey/Ifeo/Winlogon/Service */
@@ -571,7 +591,7 @@ const DOUBLE g_baIndicatorScores[BA_MAX_INDICATORS] = {
     85.0,                            /* 72: Remote executable mapped view — 远程可执行映射，注入核心步骤 */
     80.0,                            /* 73: Non-exec alloc later protected to exec — 分配后保护链 */
     80.0,                            /* 74: Write then protect to exec — 写入后保护链 */
-    45.0,                            /* 75: Self-loading DLL evasion */
+    70.0,                            /* 75: DLL side-loading detected — 只要侧载就触发行为防护 */
     /* Additional execution indicators (76-83) */
     40.0,                            /* 76: Mshta execution */
     35.0,                            /* 77: Regsvr32 scriptlet execution */
@@ -698,7 +718,8 @@ const DOUBLE g_baIndicatorScores[BA_MAX_INDICATORS] = {
     45.0,                            /* 182: 创建隐藏的可执行文件 */
     55.0,                            /* 183: 创建系统级隐藏的可执行文件 */
     50.0,                            /* 184: 同目录下存在可执行文件时创建隐藏的可执行文件 */
-    0.0                              /* 185: Invalid indicator (no score) */
+    30.0,                            /* 185: 未签名进程加载同目录未签名 DLL（侧载低分） */
+    0.0                              /* 186: Invalid indicator (no score) */
 };
 
 /* 威胁画像已迁移至动态 TOML 规则 (rules/behavior/*.toml)，静态 profiles 已移除 */
@@ -3519,26 +3540,29 @@ VOID BehaviorExtractMemoryIndicators(int idx, const BA_STORED_EVENT* ev)
     /* ── #17: 远程线程起始地址非镜像内存检测（shellcode 注入 T1055）──
      * 参考 Elastic Security shellcode thread 检测策略：
      * PsSetCreateThreadNotifyRoutine 回调中获取远程线程起始地址，
-     * 通过 BehaviorIsAddressInLoadedModule 检查是否落在已加载镜像范围内。
-     * 非镜像内存中的线程起始地址 = shellcode 注入的强证据。 */
+     * 通过 BehaviorCheckStartAddressUnbacked 检查是否落在非镜像可执行内存
+     * （MEM_COMMIT + PAGE_EXECUTE_* + 非 MEM_IMAGE）。
+     * 非镜像可执行内存中的线程起始地址 = shellcode 注入的强证据。 */
     if (ev->memOp == BA_MOP_RemoteThreadUnbacked &&
         ev->threadStartAddr != NULL)
     {
         CHAR evBuf[256];
-        BOOLEAN isInImage = BehaviorIsAddressInLoadedModule(
-            ev->targetPid, ev->threadStartAddr);
+        BOOLEAN isExec = FALSE;
+        BOOLEAN unbackedExec = BehaviorCheckStartAddressUnbacked(
+            ev->targetPid, ev->threadStartAddr, &isExec);
 
-        if (!isInImage)
+        if (unbackedExec)
         {
             RtlStringCbPrintfA(evBuf, sizeof(evBuf),
-                "Remote thread start address 0x%p is NOT in any loaded module (shellcode injection T1055)",
+                "Remote thread start address 0x%p in unbacked executable memory (shellcode injection T1055)",
                 ev->threadStartAddr);
             addIndicator(idx, BA_IND_MEM_THREAD_START_UNBACKED, evBuf);
         }
         else
         {
-            DriverDbgPrint("[BA-MEM] Remote thread start address 0x%p is in loaded module (legitimate)\n",
-                ev->threadStartAddr);
+            DriverDbgPrint("[BA-MEM] Remote thread start address 0x%p: %s\n",
+                ev->threadStartAddr,
+                isExec ? "in loaded module (legitimate)" : "not executable or unknown");
         }
     }
 
@@ -4230,14 +4254,24 @@ VOID BehaviorAnalysisInit()
     g_bBehaviorDetectionEnabled = FALSE;
     KeReleaseSpinLock(&g_baLock, oldIrql);
 
-    /* 初始化文件释放跟踪 */
+    /* 初始化文件释放跟踪（堆分配） */
     KeInitializeSpinLock(&g_baDroppedFileLock);
-    RtlZeroMemory(g_baDroppedFiles, sizeof(g_baDroppedFiles));
+    if (g_baDroppedFiles == NULL) {
+        g_baDroppedFiles = (BA_DROPPED_FILE*)ExAllocatePool2(
+            POOL_FLAG_NON_PAGED, sizeof(BA_DROPPED_FILE) * BA_MAX_DROPPED_FILES, 'baDF');
+    }
+    if (g_baDroppedFiles != NULL)
+        RtlZeroMemory(g_baDroppedFiles, sizeof(BA_DROPPED_FILE) * BA_MAX_DROPPED_FILES);
     g_baDroppedFileIdx = 0;
 
-    /* 初始化注册表操作回滚跟踪 */
+    /* 初始化注册表操作回滚跟踪（堆分配） */
     KeInitializeSpinLock(&g_baRegOpLock);
-    RtlZeroMemory(g_baRegOps, sizeof(g_baRegOps));
+    if (g_baRegOps == NULL) {
+        g_baRegOps = (BA_REG_OP_RECORD*)ExAllocatePool2(
+            POOL_FLAG_NON_PAGED, sizeof(BA_REG_OP_RECORD) * BA_MAX_REG_OPS, 'baRO');
+    }
+    if (g_baRegOps != NULL)
+        RtlZeroMemory(g_baRegOps, sizeof(BA_REG_OP_RECORD) * BA_MAX_REG_OPS);
     g_baRegOpIdx = 0;
     g_regDriverAccessDepth = 0;
 
@@ -4387,20 +4421,26 @@ VOID BehaviorAnalysisCleanup()
     g_baInitialized = FALSE;
     KeReleaseSpinLock(&g_baLock, oldIrql);
 
-    /* Clear dropped files tracking */
+    /* Clear dropped files tracking（堆分配，直接释放） */
     {
         KIRQL oldIrql2;
         KeAcquireSpinLock(&g_baDroppedFileLock, &oldIrql2);
-        RtlZeroMemory(g_baDroppedFiles, sizeof(g_baDroppedFiles));
+        if (g_baDroppedFiles != NULL) {
+            ExFreePoolWithTag(g_baDroppedFiles, 'baDF');
+            g_baDroppedFiles = NULL;
+        }
         g_baDroppedFileIdx = 0;
         KeReleaseSpinLock(&g_baDroppedFileLock, oldIrql2);
     }
 
-    /* Clear registry rollback tracking */
+    /* Clear registry rollback tracking（堆分配，直接释放） */
     {
         KIRQL oldIrql2;
         KeAcquireSpinLock(&g_baRegOpLock, &oldIrql2);
-        RtlZeroMemory(g_baRegOps, sizeof(g_baRegOps));
+        if (g_baRegOps != NULL) {
+            ExFreePoolWithTag(g_baRegOps, 'baRO');
+            g_baRegOps = NULL;
+        }
         g_baRegOpIdx = 0;
         KeReleaseSpinLock(&g_baRegOpLock, oldIrql2);
     }
@@ -5016,6 +5056,45 @@ static VOID BaSigCacheAdd(INT64 pid, BOOLEAN isSigned)
     KeReleaseSpinLock(&g_baSigCacheLock, oldIrql);
 }
 
+/* ── BaIsMsiexecPid: 判断 PID 是否属于 msiexec.exe（可信审查用）──
+ * msiexec.exe 本身带微软签名，但可能被攻击者用于执行恶意 MSI（T1218），
+ * 因此即使签名有效也不视为可信进程，使其释放/修改行为进入行为检测。
+ * 仅在确认进程已签名时调用，避免不必要的进程查找开销。 */
+static BOOLEAN BaIsMsiexecPid(INT64 pid)
+{
+    PEPROCESS proc = NULL;
+    UCHAR* name = NULL;
+    BOOLEAN isMsiexec = FALSE;
+
+    if (pid <= 0)
+        return FALSE;
+
+    if (!NT_SUCCESS(PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)pid, &proc)) || proc == NULL)
+        return FALSE;
+
+    __try {
+        INT i;
+        /* PsGetProcessImageFileName 返回 8.3 短名，通常为大写（如 "MSIEXEC.EXE"） */
+        name = PsGetProcessImageFileName(proc);
+        if (name != NULL) {
+            static const CHAR target[] = "msiexec.exe";
+            for (i = 0; target[i] != '\0'; i++) {
+                CHAR c = (CHAR)name[i];
+                if (c == '\0') break;                 /* name 提前结束 */
+                if (c >= 'A' && c <= 'Z') c = (CHAR)(c + 32);
+                if (c != target[i]) break;
+            }
+            if (target[i] == '\0' && name[i] == '\0')
+                isMsiexec = TRUE;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        isMsiexec = FALSE;
+    }
+
+    ObDereferenceObject(proc);
+    return isMsiexec;
+}
+
 /* ── ci_verify.h 实现：通过缓存表检查进程是否可信 ── */
 BOOLEAN CiIsPidSigned(INT64 pid)
 {
@@ -5028,7 +5107,70 @@ BOOLEAN CiIsPidSigned(INT64 pid)
 VOID CiRecordProcessSignature(INT64 pid, BOOLEAN isSigned)
 {
     if (pid == 0) return;
+    /* 可信审查：msiexec.exe 可能被用于执行恶意 MSI（T1218），
+     * 即使其本身带微软签名也不视为可信进程，使释放/修改行为进入行为检测 */
+    if (isSigned && BaIsMsiexecPid(pid))
+        isSigned = FALSE;
     BaSigCacheAdd(pid, isSigned);
+}
+
+/* ── ci_verify.h 实现：同目录未签名 DLL 降级进程签名状态 ──
+ * 当签名进程加载了与其 EXE 同目录的未签名 DLL 时，标记该进程为不可信。
+ * 使用"降级"而非"覆盖"策略：若已标记为不可信则保持不变，否则降为 FALSE。 */
+VOID BaMarkPidUnsignedDueToSideLoad(INT64 pid, const CHAR* dllPath)
+{
+    if (pid == 0) return;
+    BOOLEAN currentSigned = FALSE;
+    BOOLEAN existed = BaSigCacheLookup(pid, &currentSigned);
+    if (existed && currentSigned)
+    {
+        /* 原来可信，因同目录未签名 DLL 而降级 */
+        BaSigCacheAdd(pid, FALSE);
+        DriverDbgPrint("[SIDE-LOAD] PID=%lld marked unsigned due to same-dir unsigned DLL: %s\n",
+            pid, dllPath ? dllPath : "Unknown");
+    }
+    else if (!existed)
+    {
+        /* 缓存未命中（进程刚启动，EXE 签名尚未记录），直接写入不可信 */
+        BaSigCacheAdd(pid, FALSE);
+        DriverDbgPrint("[SIDE-LOAD] PID=%lld not in cache, marked unsigned due to same-dir DLL: %s\n",
+            pid, dllPath ? dllPath : "Unknown");
+    }
+    /* 已标记为不可信则无需重复处理 */
+}
+
+/* ── 记录 DLL 侧载指标（同目录未签名 DLL）──
+ * 签名进程加载未签名 DLL：BA_IND_FILE_DLL_SIDE_LOAD（标准分 70）
+ * 未签名进程加载未签名 DLL：BA_IND_FILE_DLL_SIDE_LOAD_UNSIGNED（低分 30）
+ * 由 LoadImageNotifyRoutine 中的 DLL 扫描在 PASSIVE_LEVEL 工作项中调用。 */
+VOID BehaviorRecordDllSideLoad(INT64 pid, const CHAR* dllPath, BOOLEAN processSigned)
+{
+    CHAR evBuf[128];
+    const CHAR* p;
+    int pathLen;
+    INT idx;
+
+    if (pid == 0) return;
+    if (!g_baInitialized || !g_bBehaviorDetectionEnabled) return;
+
+    idx = findOrCreatePidIndex(pid);
+    if (idx < 0) return;
+
+    pathLen = dllPath ? kStrLen(dllPath) : 0;
+    p = dllPath ? dllPath : "Unknown";
+    if (pathLen > 100) p += (pathLen - 100);
+    RtlStringCbPrintfA(evBuf, sizeof(evBuf), "DLL side-load: %s", p);
+
+    if (processSigned)
+    {
+        addIndicator(idx, BA_IND_FILE_DLL_SIDE_LOAD, evBuf);
+        DriverDbgPrint("[SIDE-LOAD] PID=%lld signed host loads unsigned DLL, indicator=%d\n", pid, BA_IND_FILE_DLL_SIDE_LOAD);
+    }
+    else
+    {
+        addIndicator(idx, BA_IND_FILE_DLL_SIDE_LOAD_UNSIGNED, evBuf);
+        DriverDbgPrint("[SIDE-LOAD] PID=%lld unsigned host loads unsigned DLL, indicator=%d (low score)\n", pid, BA_IND_FILE_DLL_SIDE_LOAD_UNSIGNED);
+    }
 }
 
 /* ── 辅助函数：通过 CI.dll 验证进程镜像签名 ──
@@ -5123,6 +5265,11 @@ BOOLEAN BaIsProcessSigned(INT64 pid)
     }
 
     ZwClose(fileHandle);
+
+    /* 可信审查：msiexec.exe 不视为可信进程（可能执行恶意 MSI），
+     * 覆盖驱动加载前已运行的 msiexec 的缓存未命中路径 */
+    if (isSigned && BaIsMsiexecPid(pid))
+        isSigned = FALSE;
 
     /* 缓存结果 */
     BaSigCacheAdd(pid, isSigned);
@@ -6531,7 +6678,7 @@ VOID BehaviorHandleEtwMemoryEvent(PETW_MEMORY_EVENT_DATA pEvent)
                             BehaviorHandleInjectionAlertAsync(
                                 (INT64)(ULONG_PTR)pEvent->CallerPid, callerName,
                                 (INT64)(ULONG_PTR)pEvent->CallerPid, callerName,
-                                "MemoryProtection/SelfProtectRWX.T1055", 0);
+                                "MemoryProtection/SelfProtectRWX.T1055", 0, NULL);
                         }
                     }
                     // 额外检测：非系统进程将内存设为只读可执行（PAGE_EXECUTE_READ）
@@ -6543,7 +6690,7 @@ VOID BehaviorHandleEtwMemoryEvent(PETW_MEMORY_EVENT_DATA pEvent)
                         BehaviorHandleInjectionAlertAsync(
                             (INT64)(ULONG_PTR)pEvent->CallerPid, callerName,
                             (INT64)(ULONG_PTR)pEvent->CallerPid, callerName,
-                            "MemoryProtection/SelfProtectExecRead.T1055", 0);
+                            "MemoryProtection/SelfProtectExecRead.T1055", 0, NULL);
                     }
                     /* Shellcode深度检测：分析被保护内存的内容 */
                     if (pEvent->PayloadSize >= 8) {
@@ -6656,7 +6803,7 @@ VOID BehaviorHandleEtwMemoryEvent(PETW_MEMORY_EVENT_DATA pEvent)
                     BehaviorHandleInjectionAlertAsync(
                         pEvent->CallerPid, callerName,
                         pEvent->TargetPid, targetName,
-                        "DefenseEvasion/Injection:RemoteProtectExecutable.T1055", 0);
+                        "DefenseEvasion/Injection:RemoteProtectExecutable.T1055", 0, NULL);
                 }
             }
             /* 只有真正改为可执行保护时才记录 executable 指标 */
@@ -6966,7 +7113,7 @@ VOID BehaviorHandleEtwNetworkEvent(PETW_NETWORK_EVENT_DATA pEvent)
             BehaviorHandleInjectionAlertAsync(
                 (INT64)(ULONG_PTR)pEvent->CallerPid, callerName,
                 0, "remote",
-                "CommandAndControl/C2Connection.T1102", 0);
+                "CommandAndControl/C2Connection.T1102", 0, NULL);
         }
 
         /* DoH (DNS over HTTPS) C2 通信检测：
@@ -7190,7 +7337,7 @@ VOID BehaviorHandleEtwSyscallEvent(PETW_SYSCALL_EVENT_DATA pEvent)
     CHAR evidence[256] = {0};
     CHAR callerName[64] = {0};
     int idx;
-    BA_THREAT_RESULT result = {0};
+    BA_THREAT_RESULT* pResult = NULL;   /* 堆分配：BA_MAX_EVIDENCE=64 后约 9.4KB，避免内核栈溢出 */
     BOOLEAN isSyscallBypass = FALSE;
     ULONG syscallTypeBit = 0;
 
@@ -7570,14 +7717,27 @@ VOID BehaviorHandleEtwSyscallEvent(PETW_SYSCALL_EVENT_DATA pEvent)
         }
 
         /* 触发 behavior 评估，若命中画像则实时告警 */
-        BehaviorEvaluateProcess((INT64)(ULONG_PTR)pEvent->CallerPid, &result);
-        if (result.isThreat && result.confidence >= 80.0) {
+        pResult = (BA_THREAT_RESULT*)ExAllocatePool2(
+            POOL_FLAG_NON_PAGED, sizeof(BA_THREAT_RESULT), 'BAnl');
+        if (pResult == NULL) {
+            DriverDbgPrint("[BA-ETW-SYSCALL] Allocation failed, skipping evaluation\n");
+            return;
+        }
+        RtlZeroMemory(pResult, sizeof(BA_THREAT_RESULT));
+        BehaviorEvaluateProcess((INT64)(ULONG_PTR)pEvent->CallerPid, pResult);
+        if (pResult->isThreat && pResult->confidence >= 80.0) {
             BehaviorHandleInjectionAlertAsync(
                 (INT64)(ULONG_PTR)pEvent->CallerPid, callerName,
                 0, "local",
-                result.threatClass, 0);
+                pResult->threatClass, 0, NULL);
         }
+        ExFreePool(pResult);
+        pResult = NULL;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (pResult != NULL) {
+            ExFreePool(pResult);
+            pResult = NULL;
+        }
         DriverDbgPrint("[BA-ETW-SYSCALL] Exception caught, dropping event\n");
     }
 }
@@ -7593,7 +7753,7 @@ VOID BehaviorHandleNtdllReloadEvent(PNTDLL_RELOAD_EVENT_DATA pEvent)
     CHAR evidence[256] = {0};
     CHAR processName[64] = {0};
     int idx;
-    BA_THREAT_RESULT result = {0};
+    BA_THREAT_RESULT* pResult = NULL;   /* 堆分配：BA_MAX_EVIDENCE=64 后约 9.4KB，避免内核栈溢出 */
 
     if (pEvent == NULL || pEvent->ProcessId == 0) {
         return;
@@ -7655,14 +7815,27 @@ VOID BehaviorHandleNtdllReloadEvent(PNTDLL_RELOAD_EVENT_DATA pEvent)
             processName, pEvent->ProcessId, pEvent->Flags);
 
         /* 触发行为评估，若命中画像则实时告警 */
-        BehaviorEvaluateProcess((INT64)(ULONG_PTR)pEvent->ProcessId, &result);
-        if (result.isThreat && result.confidence >= 80.0) {
+        pResult = (BA_THREAT_RESULT*)ExAllocatePool2(
+            POOL_FLAG_NON_PAGED, sizeof(BA_THREAT_RESULT), 'BAnl');
+        if (pResult == NULL) {
+            DriverDbgPrint("[BA-NTDLL] Allocation failed, skipping evaluation\n");
+            return;
+        }
+        RtlZeroMemory(pResult, sizeof(BA_THREAT_RESULT));
+        BehaviorEvaluateProcess((INT64)(ULONG_PTR)pEvent->ProcessId, pResult);
+        if (pResult->isThreat && pResult->confidence >= 80.0) {
             BehaviorHandleInjectionAlertAsync(
                 (INT64)(ULONG_PTR)pEvent->ProcessId, processName,
                 0, "local",
-                result.threatClass, 0);
+                pResult->threatClass, 0, NULL);
         }
+        ExFreePool(pResult);
+        pResult = NULL;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (pResult != NULL) {
+            ExFreePool(pResult);
+            pResult = NULL;
+        }
         DriverDbgPrint("[BA-NTDLL] Exception caught, dropping event\n");
     }
 }
@@ -7678,7 +7851,7 @@ VOID BehaviorHandleDcomEvent(PDCOM_EVENT_DATA pEvent)
     INT64 pid;
     const CHAR* evidence = NULL;
     BA_INDICATOR ind = BA_IND_DCOM_REMOTE_ACTIVATION;
-    BA_THREAT_RESULT result = {0};
+    BA_THREAT_RESULT* pResult = NULL;   /* 堆分配：BA_MAX_EVIDENCE=64 后约 9.4KB，避免内核栈溢出 */
     CHAR processName[64] = {0};
 
     if (!pEvent) return;
@@ -7735,14 +7908,27 @@ VOID BehaviorHandleDcomEvent(PDCOM_EVENT_DATA pEvent)
             evidence, processName, pid, pEvent->EventType);
 
         /* 触发行为评估，若命中画像则实时告警 */
-        BehaviorEvaluateProcess(pid, &result);
-        if (result.isThreat && result.confidence >= 80.0) {
+        pResult = (BA_THREAT_RESULT*)ExAllocatePool2(
+            POOL_FLAG_NON_PAGED, sizeof(BA_THREAT_RESULT), 'BAnl');
+        if (pResult == NULL) {
+            DriverDbgPrint("[BA-DCOM] Allocation failed, skipping evaluation\n");
+            return;
+        }
+        RtlZeroMemory(pResult, sizeof(BA_THREAT_RESULT));
+        BehaviorEvaluateProcess(pid, pResult);
+        if (pResult->isThreat && pResult->confidence >= 80.0) {
             BehaviorHandleInjectionAlertAsync(
                 pid, processName,
                 pEvent->TargetPid, pEvent->TargetProcessName,
-                result.threatClass, 0);
+                pResult->threatClass, 0, NULL);
         }
+        ExFreePool(pResult);
+        pResult = NULL;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (pResult != NULL) {
+            ExFreePool(pResult);
+            pResult = NULL;
+        }
         DriverDbgPrint("[BA-DCOM] Exception caught, dropping event\n");
     }
 }
@@ -7808,35 +7994,52 @@ VOID BehaviorEvaluateAll(BA_THREAT_RESULT* results, INT maxResults, INT* outCoun
             }
 
             {
-                BA_THREAT_RESULT r = {0};
-                BehaviorEvaluateProcess(pid, &r);
+                /* 堆分配：BA_MAX_EVIDENCE=64 后 BA_THREAT_RESULT 约 9.4KB，避免内核栈溢出；
+                 * 持锁在 DISPATCH_LEVEL，必须用 NON_PAGED 池 */
+                BA_THREAT_RESULT* pR = (BA_THREAT_RESULT*)ExAllocatePool2(
+                    POOL_FLAG_NON_PAGED, sizeof(BA_THREAT_RESULT), 'BAnl');
+                if (pR == NULL) {
+                    DriverDbgPrint("BehaviorEvaluateAll: allocation failed, skipping PID %lld\n", pid);
+                    continue;
+                }
+                RtlZeroMemory(pR, sizeof(BA_THREAT_RESULT));
+                BehaviorEvaluateProcess(pid, pR);
                 evaluatedCount++;
 
-                if (r.isThreat && r.confidence > 0.0) {
+                if (pR->isThreat && pR->confidence > 0.0) {
                     /* 再次检查白名单（双重验证） */
-                    if (BehaviorIsWhitelisted(r.processPath)) {
+                    if (BehaviorIsWhitelisted(pR->processPath)) {
                         whitelistedCount++;
+                        ExFreePool(pR);
                         continue;
                     }
 
-                    results[*outCount] = r;
+                    results[*outCount] = *pR;
                     (*outCount)++;
                 }
+                ExFreePool(pR);
             }
         }
 
         KeReleaseSpinLock(&g_baLock, oldIrql);
         lockHeld = FALSE;
 
-        /* 按 confidence 降序排序 */
-        for (i = 1; i < *outCount; i++) {
-            BA_THREAT_RESULT key = results[i];
-            j = i - 1;
-            while (j >= 0 && results[j].confidence < key.confidence) {
-                results[j + 1] = results[j];
-                j--;
+        /* 按 confidence 降序排序（堆临时变量，避免 9.4KB 结构体上内核栈） */
+        {
+            BA_THREAT_RESULT* pKey = (BA_THREAT_RESULT*)ExAllocatePool2(
+                POOL_FLAG_NON_PAGED, sizeof(BA_THREAT_RESULT), 'BAnl');
+            if (pKey != NULL) {
+                for (i = 1; i < *outCount; i++) {
+                    RtlCopyMemory(pKey, &results[i], sizeof(BA_THREAT_RESULT));
+                    j = i - 1;
+                    while (j >= 0 && results[j].confidence < pKey->confidence) {
+                        results[j + 1] = results[j];
+                        j--;
+                    }
+                    results[j + 1] = *pKey;
+                }
+                ExFreePool(pKey);
             }
-            results[j + 1] = key;
         }
 
         BehaviorLogInfo("BehaviorEvaluateAll: evaluated=%d, whitelisted=%d, threats=%d, suppressed=%d",
@@ -8557,6 +8760,8 @@ VOID BehaviorRecordDroppedFile(INT64 pid, PUNICODE_STRING filePath)
     KIRQL oldIrql = 0;
     LONG idx;
     USHORT copyLen;
+    BA_ROLLBACK_LOG_RECORD spillRec = {0};
+    BOOLEAN needSpill = FALSE;
 
     if (!filePath || !filePath->Buffer || filePath->Length == 0)
         return;
@@ -8571,7 +8776,22 @@ VOID BehaviorRecordDroppedFile(INT64 pid, PUNICODE_STRING filePath)
 
     KeAcquireSpinLock(&g_baDroppedFileLock, &oldIrql);
 
+    if (g_baDroppedFiles == NULL) {
+        KeReleaseSpinLock(&g_baDroppedFileLock, oldIrql);
+        return;
+    }
+
     idx = (LONG)((ULONG)InterlockedIncrement(&g_baDroppedFileIdx) % BA_MAX_DROPPED_FILES);
+
+    /* 溢出：覆盖前该槽位仍为有效记录，构造回滚记录上报主程序持久化到磁盘 */
+    if (g_baDroppedFiles[idx].valid) {
+        spillRec.type = 0;  /* file */
+        spillRec.pid = g_baDroppedFiles[idx].pid;
+        wpathToAscii(g_baDroppedFiles[idx].path, g_baDroppedFiles[idx].pathLen,
+            spillRec.path, BA_RBLOG_PATH_LEN);
+        needSpill = TRUE;
+    }
+
     g_baDroppedFiles[idx].pid = pid;
     copyLen = filePath->Length / sizeof(WCHAR);
     RtlCopyMemory(g_baDroppedFiles[idx].path, filePath->Buffer, filePath->Length);
@@ -8580,6 +8800,10 @@ VOID BehaviorRecordDroppedFile(INT64 pid, PUNICODE_STRING filePath)
     g_baDroppedFiles[idx].valid = TRUE;
 
     KeReleaseSpinLock(&g_baDroppedFileLock, oldIrql);
+
+    /* 在锁外发送，避免持有自旋锁期间进行分配/入队 */
+    if (needSpill)
+        SendRollbackLogRecord(&spillRec);
 }
 
 /* IsScriptProcess: 检查是否为脚本解释器进程（即使签名也启用清除） */
@@ -8687,6 +8911,8 @@ VOID BehaviorCleanupDroppedFiles(INT64* treePids, int treePidCount,
     int i, j;
     int cleanedCount = 0;
     int skippedCount = 0;
+
+    if (g_baDroppedFiles == NULL) return;
 
     __try {
 
@@ -8844,6 +9070,8 @@ VOID BehaviorRecordRegOpWithBackup(
     LONG idx;
     KIRQL oldIrql = 0;
     BA_REG_OP_RECORD* rec;
+    BA_ROLLBACK_LOG_RECORD spillRec = {0};
+    BOOLEAN needSpill = FALSE;
 
     if (!g_baInitialized) return;
     if (!g_bBehaviorDetectionEnabled) return;
@@ -8938,8 +9166,31 @@ VOID BehaviorRecordRegOpWithBackup(
 
     /* 写入环形缓冲区 */
     KeAcquireSpinLock(&g_baRegOpLock, &oldIrql);
+
+    if (g_baRegOps == NULL) {
+        KeReleaseSpinLock(&g_baRegOpLock, oldIrql);
+        return;
+    }
+
     idx = (LONG)((ULONG)InterlockedIncrement(&g_baRegOpIdx) % BA_MAX_REG_OPS);
     rec = &g_baRegOps[idx];
+
+    /* 溢出：覆盖前该槽位仍为有效记录，构造自包含回滚记录（含原始值备份）上报主程序持久化 */
+    if (rec->valid) {
+        spillRec.type = 1;  /* registry */
+        spillRec.pid = rec->pid;
+        wpathToAscii(rec->keyPath, rec->keyPathLen, spillRec.path, BA_RBLOG_PATH_LEN);
+        wpathToAscii(rec->valueName, rec->valueNameLen, spillRec.valueName, BA_RBLOG_VALUE_NAME_LEN);
+        spillRec.regOp = rec->regOp;
+        spillRec.hadExisting = rec->hadExistingValue;
+        spillRec.originalType = rec->originalType;
+        spillRec.originalDataLen = (rec->originalDataLen <= BA_RBLOG_BACKUP_LEN)
+            ? rec->originalDataLen : BA_RBLOG_BACKUP_LEN;
+        if (spillRec.originalDataLen > 0)
+            RtlCopyMemory(spillRec.originalData, rec->originalData, spillRec.originalDataLen);
+        needSpill = TRUE;
+    }
+
     RtlZeroMemory(rec, sizeof(BA_REG_OP_RECORD));
     rec->pid = pid;
     {
@@ -8965,6 +9216,10 @@ VOID BehaviorRecordRegOpWithBackup(
     }
     rec->valid = TRUE;
     KeReleaseSpinLock(&g_baRegOpLock, oldIrql);
+
+    /* 在锁外发送，避免持有自旋锁期间进行分配/入队 */
+    if (needSpill)
+        SendRollbackLogRecord(&spillRec);
 }
 
 /* CollectAncestorChainPids: 沿父进程链向上追溯至 explorer（不含），收集祖先 PID
@@ -9037,6 +9292,8 @@ static void CollectAncestorChainPids(INT64 rootPid, INT64* outPids, int* outCoun
 static VOID RollbackRegistryForPid(INT64 pid)
 {
     int i;
+
+    if (g_baRegOps == NULL) return;
 
     for (i = 0; i < BA_MAX_REG_OPS; i++) {
         BA_REG_OP_RECORD localRec;
@@ -9306,6 +9563,8 @@ VOID BehaviorCollectRollbackItems(INT64 rootPid,
     ULONG rootImageWLen = 0;
 
     if (outList == NULL) return;
+    /* 环形缓冲区未分配（分配失败/已清理）时无法收集 */
+    if (g_baDroppedFiles == NULL || g_baRegOps == NULL) return;
     RtlZeroMemory(outList, sizeof(BA_ROLLBACK_LIST));
     outList->rootPid = rootPid;
     if (rootProcessName)
@@ -9790,6 +10049,7 @@ static VOID BehaviorAnalysisPeriodicCleanup(VOID)
 
     /* Phase 4: 清理 g_baDroppedFiles 中死进程的记录（独立锁）
      * 注意：已告警进程的 dropped files 不立即清除，保留供回滚使用 */
+    if (g_baDroppedFiles != NULL)
     {
         int invalidated = 0;
         heldDroppedLock = &g_baDroppedFileLock;
@@ -9823,6 +10083,7 @@ static VOID BehaviorAnalysisPeriodicCleanup(VOID)
     }
 
     /* Phase 5: 清理 g_baRegOps 中死进程的注册表回滚记录（独立锁） */
+    if (g_baRegOps != NULL)
     {
         int invalidated = 0;
         heldRegLock = &g_baRegOpLock;
@@ -10375,6 +10636,22 @@ NTSTATUS BehaviorCheckAndAlert(INT64 pid, const CHAR* imagePath)
     }
     KeReleaseSpinLock(&g_baLock, oldIrql);
     lockHeld = FALSE;
+
+    /* ── 信任链加权：对带可信签名的根进程降低整棵进程树的指标强度，
+     * 减少可信软件的误报。msiexec.exe 等被强制不可信的进程（CiIsPidSigned=FALSE）
+     * 不享受加成，其恶意 MSI 释放/修改行为保持完整检测权重。
+     * 注意：combined[]/totalScore 已聚合完毕，此处做整体衰减。 */
+    {
+        DOUBLE trustBonus = BehaviorGetTrustBonus(rootPid, rootImagePath);
+        if (trustBonus > 0.0) {
+            for (i = 0; i < BA_MAX_INDICATORS; i++) {
+                if (combined[i] > 0.0) combined[i] *= (1.0 - trustBonus);
+            }
+            totalScore *= (1.0 - trustBonus);
+            DriverDbgPrint("[BA-DETECT] Trust bonus=%.2f applied to root PID=%lld tree, totalScore=%.1f\n",
+                trustBonus, rootPid, totalScore);
+        }
+    }
 
     /* ── 步骤3: 动态规则匹配（静态 profiles 已移除，全部由 TOML 动态规则管理）──
      * 匹配逻辑：
@@ -10968,6 +11245,7 @@ typedef struct _INJECTION_WORKITEM_CTX {
     INT64 sourcePid;
     INT64 targetPid;
     INT64 threadId;          /* 远程线程 ID，用于 BLOCK 时终止远程线程 */
+    PVOID threadStartAddr;   /* 远程线程起始地址（shellcode 内存证据，可 NULL） */
     CHAR sourceName[64];
     CHAR targetName[64];
     CHAR injectType[128];
@@ -11061,6 +11339,45 @@ static VOID InjectionAlertWorkItemRoutine(PVOID Context)
         /* 受信任的安全软件放行 - 已删除，不再区分受信任进程。 */
 
         /* 受信任的第三方应用/开发者工具放行 - 已删除，不再区分受信任进程。 */
+    }
+
+    /* ── 步骤1.5: shellcode 内存证据检查（对齐 Elastic kernel_shellcode_event）──
+     * 线程层回调已获取 StartAddress（ctx->threadStartAddr）：
+     *   - 地址落在非镜像可执行内存（unbacked executable）→ 强证据，继续弹窗流程
+     *   - 地址在镜像内 → trampoline 跳板 Rip 采样（Elastic 博客公开对抗手段）：
+     *     线程上下文 Rip 落入非镜像可执行区 → 跳板注入，仍弹窗
+     *   - 均无证据（模块注入/合法工具，如调试器把 StartAddress 指向合法导出）
+     *     → 不弹窗不挂起，仅记录日志，由 R3 hook 层与行为评分引擎继续处理，
+     *       消除名单机制外的误报
+     * 仅对携带 threadStartAddr 的线程注入告警生效（其余告警传 NULL 不受影响）。 */
+    if (ctx->threadStartAddr != NULL)
+    {
+        BOOLEAN unbackedExec = BehaviorCheckStartAddressUnbacked(
+            ctx->targetPid, ctx->threadStartAddr, NULL);
+        BOOLEAN trampolineHit = FALSE;
+
+        if (!unbackedExec)
+        {
+            trampolineHit = BehaviorIsThreadRipInUnbackedExecutable(
+                ctx->threadId, ctx->targetPid);
+        }
+
+        if (!unbackedExec && !trampolineHit)
+        {
+            CHAR noEvLog[320];
+            RtlStringCbPrintfA(noEvLog, sizeof(noEvLog),
+                "[注入防护-无内存证据] 远程线程 StartAddress 0x%p 位于已加载镜像且 Rip 未落入非镜像可执行区，跳过弹窗（模块注入/合法工具候选）: Source=%s(PID:%lld) Target=%s(PID:%lld)",
+                ctx->threadStartAddr, ctx->sourceName, ctx->sourcePid,
+                ctx->targetName, ctx->targetPid);
+            SendInjectionLog(noEvLog);
+            DriverDbgPrint("%s\n", noEvLog);
+            ExFreePool(ctx);
+            return;
+        }
+
+        DriverDbgPrint("[INJECT-ALERT] Shellcode memory evidence %s (StartAddress=0x%p trampoline=%d)\n",
+            unbackedExec ? "UNBACKED-EXEC" : "via-Rip",
+            ctx->threadStartAddr, trampolineHit ? 1 : 0);
     }
 
     /* ── 步骤2: 挂起源进程 ──
@@ -11288,11 +11605,12 @@ static VOID InjectionAlertWorkItemRoutine(PVOID Context)
         /* 用户态可见日志：用户选择阻止，正在终止源进程 */
         {
             CHAR blockLogMsg[400];
+            const CHAR* injectTag = ctx->injectType ? ctx->injectType : "Unknown";
             RtlStringCbPrintfA(blockLogMsg, sizeof(blockLogMsg),
-                "[注入防护-阻止] 用户选择阻止，正在终止源进程: 源=%s (PID:%lld) 类型=%s",
+                "[%s] 用户选择阻止，正在终止源进程: 源=%s (PID:%lld)",
+                injectTag,
                 ctx->sourceName ? ctx->sourceName : "Unknown",
-                ctx->sourcePid,
-                ctx->injectType ? ctx->injectType : "Unknown");
+                ctx->sourcePid);
             SendInjectionLog(blockLogMsg);
         }
 
@@ -11538,11 +11856,12 @@ static VOID InjectionAlertWorkItemRoutine(PVOID Context)
         /* 用户态可见日志：用户选择放行，已恢复源进程 */
         {
             CHAR allowLogMsg[400];
+            const CHAR* injectTag = ctx->injectType ? ctx->injectType : "Unknown";
             RtlStringCbPrintfA(allowLogMsg, sizeof(allowLogMsg),
-                "[注入防护-放行] 用户选择放行: 源=%s (PID:%lld) 类型=%s",
+                "[%s] 用户选择放行: 源=%s (PID:%lld)",
+                injectTag,
                 ctx->sourceName ? ctx->sourceName : "Unknown",
-                ctx->sourcePid,
-                ctx->injectType ? ctx->injectType : "Unknown");
+                ctx->sourcePid);
             SendInjectionLog(allowLogMsg);
         }
 
@@ -11828,7 +12147,8 @@ VOID BehaviorHandleInjectionAlertAsync(
     INT64 sourcePid, const CHAR* sourceName,
     INT64 targetPid, const CHAR* targetName,
     const CHAR* injectType,
-    INT64 threadId)
+    INT64 threadId,
+    PVOID threadStartAddr)
 {
     /* 注入告警（CreateRemoteThread / 句柄剥离 / 线程劫持）始终触发弹窗，
      * 不受 g_bBehaviorDetectionEnabled 开关控制。
@@ -11846,6 +12166,7 @@ VOID BehaviorHandleInjectionAlertAsync(
     ctx->sourcePid = sourcePid;
     ctx->targetPid = targetPid;
     ctx->threadId = threadId;
+    ctx->threadStartAddr = threadStartAddr;
     RtlStringCbCopyA(ctx->sourceName, sizeof(ctx->sourceName), sourceName ? sourceName : "Unknown");
     RtlStringCbCopyA(ctx->targetName, sizeof(ctx->targetName), targetName ? targetName : "Unknown");
     RtlStringCbCopyA(ctx->injectType, sizeof(ctx->injectType), injectType ? injectType : "Unknown");
@@ -12318,6 +12639,149 @@ BOOLEAN BehaviorIsAddressInLoadedModule(
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+ * BehaviorCheckStartAddressUnbacked — 检查地址是否落在非镜像可执行内存
+ *
+ * 对齐 Elastic Security shellcode-thread（kernel_shellcode_event）判定：
+ *   1. State == MEM_COMMIT
+ *   2. Protect 含 PAGE_EXECUTE_*（EXECUTE_READ / EXECUTE_READWRITE 等）
+ *   3. Type != MEM_IMAGE（无磁盘 PE 镜像映射，unbacked）
+ * 全部命中 = shellcode 注入的强证据。
+ *
+ * isExecutable 输出该页保护属性是否可执行（供调用方区分
+ * "镜像内可执行"（模块注入/trampoline 候选）与"不可执行/未知"）。
+ * ═══════════════════════════════════════════════════════════════════════════ */
+BOOLEAN BehaviorCheckStartAddressUnbacked(
+    INT64 targetPid,
+    PVOID address,
+    BOOLEAN* isExecutable)
+{
+    NTSTATUS status;
+    PEPROCESS targetProcess = NULL;
+    KAPC_STATE apcState;
+    BOOLEAN attached = FALSE;
+    BOOLEAN unbackedExec = FALSE;
+    MEMORY_BASIC_INFORMATION mbi;
+
+    if (isExecutable != NULL)
+        *isExecutable = FALSE;
+
+    if (address == NULL || targetPid <= 0)
+        return FALSE;
+
+    status = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)targetPid, &targetProcess);
+    if (!NT_SUCCESS(status) || targetProcess == NULL)
+        return FALSE;
+
+    __try
+    {
+        /* 附加到目标进程地址空间 */
+        KeStackAttachProcess(targetProcess, &apcState);
+        attached = TRUE;
+
+        RtlZeroMemory(&mbi, sizeof(mbi));
+        status = ZwQueryVirtualMemory(
+            ZwCurrentProcess(),
+            address,
+            MemoryBasicInformation,
+            &mbi,
+            sizeof(mbi),
+            NULL);
+
+        if (NT_SUCCESS(status))
+        {
+            /* Protect 低字节高四位：0x10/0x20/0x40/0x80 = PAGE_EXECUTE 系列 */
+            BOOLEAN executable = (mbi.Protect & 0xF0) != 0;
+
+            if (isExecutable != NULL)
+                *isExecutable = executable;
+
+            if (mbi.State == MEM_COMMIT && executable && mbi.Type != MEM_IMAGE)
+            {
+                unbackedExec = TRUE;
+            }
+        }
+        else
+        {
+            DriverDbgPrint("[BA-IMG-CHK] ZwQueryVirtualMemory failed for PID=%lld Addr=%p: 0x%X\n",
+                targetPid, address, status);
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        DriverDbgPrint("[BA-IMG-CHK] Exception checking address PID=%lld Addr=%p\n",
+            targetPid, address);
+    }
+
+    if (attached)
+    {
+        KeUnstackDetachProcess(&apcState);
+    }
+
+    if (targetProcess)
+    {
+        ObDereferenceObject(targetProcess);
+    }
+
+    return unbackedExec;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * BehaviorIsThreadRipInUnbackedExecutable — Trampoline 跳板检测（Rip 采样）
+ *
+ * Elastic 官方博客公开的对抗手段：恶意软件把线程 StartAddress 指向合法模块
+ * 导出（如 ntdll 导出函数），内部 jmp 跳到 shellcode（trampoline 跳板），
+ * 此时简单的 unbacked 内存判断失效。对抗方法：线程启动后采样 CPU 上下文
+ * Rip 指令指针，若 Rip 实际落入非镜像可执行内存，说明执行已进入 shellcode。
+ *
+ * 采样失败 / 线程不可访问 / Rip 无效 → 返回 FALSE（无证据，保守放行）。
+ * 必须在 PASSIVE_LEVEL 调用（KeGetContextThread 要求）。
+ * ═══════════════════════════════════════════════════════════════════════════ */
+BOOLEAN BehaviorIsThreadRipInUnbackedExecutable(
+    INT64 threadId,
+    INT64 targetPid)
+{
+    NTSTATUS status;
+    PETHREAD thread = NULL;
+    HANDLE hThread = NULL;
+    BOOLEAN unbacked = FALSE;
+    CONTEXT ctx;
+
+    if (threadId <= 0 || targetPid <= 0 || g_pNtGetContextThread == NULL)
+        return FALSE;
+
+    status = PsLookupThreadByThreadId((HANDLE)(ULONG_PTR)threadId, &thread);
+    if (!NT_SUCCESS(status) || thread == NULL)
+        return FALSE;
+
+    /* THREAD_GET_CONTEXT = 0x0008 */
+    status = ObOpenObjectByPointer(
+        thread,
+        OBJ_KERNEL_HANDLE,
+        NULL,
+        0x0008,
+        *PsThreadType,
+        KernelMode,
+        &hThread);
+    ObDereferenceObject(thread);
+    if (!NT_SUCCESS(status))
+        return FALSE;
+
+    RtlZeroMemory(&ctx, sizeof(ctx));
+    ctx.ContextFlags = CONTEXT_CONTROL;
+    status = g_pNtGetContextThread(hThread, &ctx);
+    ZwClose(hThread);
+    if (!NT_SUCCESS(status))
+        return FALSE;
+
+    /* Rip 可能为 0（线程尚未被调度）或位于内核地址，直接放行 */
+    if (ctx.Rip == 0 || (ULONG_PTR)ctx.Rip > (ULONG_PTR)MmHighestUserAddress)
+        return FALSE;
+
+    unbacked = BehaviorCheckStartAddressUnbacked(targetPid, (PVOID)ctx.Rip, NULL);
+    return unbacked;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
  * BehaviorDetectEdrFreeze — 检测 EDR-Freeze (WerFaultSecure 滥用)
  *
  * 参考 Elastic Security 规则 defense_evasion_edr_freeze_via_werfaultsecure.toml：
@@ -12485,6 +12949,6 @@ VOID BehaviorRecordPrivilegeEscalationIndicator(
     BehaviorHandleInjectionAlertAsync(
         pid, nameBuf,
         pid, nameBuf,
-        threatPrefix, 0);
+        threatPrefix, 0, NULL);
 }
 

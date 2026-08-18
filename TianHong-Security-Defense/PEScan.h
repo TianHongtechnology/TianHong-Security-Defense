@@ -2,6 +2,7 @@
 #include <set>
 #include <regex>
 #include <Windows.h>
+#include <WinTrust.h>
 #include <iostream>
 #include <array>
 #include <map>
@@ -15,6 +16,7 @@
 
 #pragma comment(lib, "..\\TianHong-Security-Defense\\lightgbm_objs.lib")
 #pragma comment(lib, "..\\TianHong-Security-Defense\\lightgbm_capi_objs.lib")
+#pragma comment(lib, "WinTrust.lib")
 
 using namespace std;
 
@@ -38,6 +40,7 @@ public:
     DWORD fileSize = 0;
     bool valid = false;
     bool _64bit = false;
+    bool _sigValid = false;    // 签名验证结果（在构造函数中通过WinVerifyTrust判定）
 
     // ---------- 基础 PE 访问 ----------
     IMAGE_DOS_HEADER* dos() const { return valid ? (IMAGE_DOS_HEADER*)fileBase : nullptr; }
@@ -755,6 +758,38 @@ public:
         auto* nt = (IMAGE_NT_HEADERS*)(fileBase + dos->e_lfanew);
         if (nt->Signature != IMAGE_NT_SIGNATURE) return;
         _64bit = (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC);
+        // 验证数字签名
+        if (nt->OptionalHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_SECURITY)
+        {
+            DWORD certSize = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_SECURITY].Size;
+            if (certSize > 0)
+            {
+                int wLen = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, NULL, 0);
+                wchar_t* wPath = new wchar_t[wLen];
+                MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wPath, wLen);
+                WINTRUST_FILE_INFO fileInfo = { 0 };
+                fileInfo.cbStruct = sizeof(fileInfo);
+                fileInfo.pcwszFilePath = wPath;
+                fileInfo.hFile = NULL;
+                fileInfo.pgKnownSubject = NULL;
+                GUID actionGuid = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+                WINTRUST_DATA trustData = { 0 };
+                trustData.cbStruct = sizeof(trustData);
+                trustData.dwUIChoice = WTD_UI_NONE;
+                trustData.fdwRevocationChecks = WTD_REVOKE_NONE;
+                trustData.dwUnionChoice = WTD_CHOICE_FILE;
+                trustData.pFile = &fileInfo;
+                trustData.dwStateAction = WTD_STATEACTION_VERIFY;
+                trustData.hWVTStateData = NULL;
+                trustData.pwszURLReference = NULL;
+                trustData.dwProvFlags = WTD_SAFER_FLAG;
+                trustData.dwUIContext = 0;
+                _sigValid = (WinVerifyTrust(NULL, &actionGuid, &trustData) == ERROR_SUCCESS);
+                trustData.dwStateAction = WTD_STATEACTION_CLOSE;
+                WinVerifyTrust(NULL, &actionGuid, &trustData);
+                delete[] wPath;
+            }
+        }
         valid = true;
     }
 
@@ -766,6 +801,7 @@ public:
     bool isPE() const { return valid; }
     bool is64bit() const { return _64bit; }
     bool isValid() const { return valid; }
+    bool isSigValid() const { return _sigValid; }
 
     // ---------- 600 维特征提取（全面应用缓存与优化）----------
     array<float, BASE_FEATURE_DIM> extractFeatures() const {
@@ -1011,6 +1047,9 @@ public:
         // 8. 数字签名 (5维)
         DWORD certRva = 0, certSize = 0;
         getDataDir(4, certRva, certSize);
+        // 签名无效时向模型表现为"无签名"，让模型自身的无签名判定处理（模型训练时无"有签名但无效"样本）
+        if (certSize > 0 && !_sigValid)
+            certSize = 0;
         feats[idx++] = certSize > 0 ? 1.0f : 0.0f;
         feats[idx++] = 0;
         feats[idx++] = 0;

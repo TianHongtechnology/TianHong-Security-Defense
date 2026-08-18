@@ -14,6 +14,14 @@
 #include <functional>
 #include <sstream>
 
+// BatchScan.h 在 Match() 中使用 Windows API（GetModuleFileNameA / DWORD / MAX_PATH），
+// 因此必须显式引入 <windows.h>，不能依赖包含方的 include 顺序。
+// 与 Sandbox.cpp 保持一致：先定义 NOMINMAX，避免 min/max 宏污染 std::min/std::max。
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
 // ============================================================
 // 通用数据结构
 // ============================================================
@@ -230,8 +238,11 @@ public:
         }
 
         // 自解析混淆 → 附加自解码标记
+        // 仅当同时存在实际解码原语（Base64/字符数组/编码命令/异或）时才判定自解码；
+        // 仅引用 FunctionName/MyInvocation（诊断脚本常见）不构成自解码。
         if (m.hasFunctionNameAccess && baseFamily.find("Obfuscated") != std::string::npos &&
-            techniques.count("T1027")) {
+            techniques.count("T1027") &&
+            (m.hasBase64Decoding || m.hasCharArray || m.hasEncodedCommand || m.hasXorOps)) {
             baseFamily += ".SelfDecoding";
         }
 
@@ -312,7 +323,20 @@ protected:
         m.hasReverseOps = (searchRegex(script, R"(-replace\s*'.*','.*')") ||
             lower.find(".reverse()") != std::string::npos);
         m.hasSubstringConcat = (countRegexMatches(script, R"(\.SubString\s*\()") > 1);
-        m.hasFunctionNameAccess = searchRegex(script, R"(\b(?:FunctionName|MyInvocation)\b)");
+        // 只有非正常 PowerShell 语境的 FunctionName/MyInvocation 引用才算混淆特征
+        // 正常用法：$PSScriptRoot、$MyInvocation.MyCommand.Name（调试/日志脚本常见）
+        // 混淆用法：单独 .FunctionName、.MyInvocation 动态访问、配合 IEX/EVAL
+        m.hasFunctionNameAccess = [&]() -> bool {
+            bool hasFnRef = searchRegex(script, R"(\bFunctionName\b)");
+            bool hasMIRef = searchRegex(script, R"(\bMyInvocation\b)");
+            if (!hasFnRef && !hasMIRef) return false;
+            // 如果同时出现 .PSScriptRoot 或 .MyCommand，视为正常脚本
+            if (searchRegex(script, R"(\$\w+\.(?:PSScriptRoot|MyCommand)\b)")) return false;
+            // 如果出现在 IEX/EVAL/InvokeExpression 上下文，视为可疑
+            if (searchRegex(lower, R"(\biex\b|\binvoke-expression\b|\beval\s*\()")) return true;
+            // 单独的 FunctionName/MyInvocation 引用（无正常上下文）也算可疑
+            return (hasFnRef || hasMIRef);
+        }();
         m.hasDotCallChains = (searchRegex(script, R"(\.\s*\()") &&
             !searchRegex(script, R"(\.\s*\$\w+\s*\()"));
         m.hasEncodedCommand = searchRegex(script, R"(-(?:enc|ec|encodedcommand)\s+)");
@@ -644,11 +668,16 @@ protected:
             report.mitreTechniques.insert("T1571");
 
         // 持久化
-        if (searchRegex(lower, R"((?:HKLM|HKCU).*\\CurrentVersion\\Run\b)"))
+        // 仅当对 Run 键执行写入（新增/修改/删除属性或 reg add）时才判定为持久化；
+        // 仅读取/枚举 Run 键（诊断、清理脚本常见）不构成持久化，避免误报。
+        if (searchRegex(lower, R"((?:HKLM|HKCU).*\\CurrentVersion\\Run.*(?:New-ItemProperty|Set-ItemProperty|Remove-ItemProperty|reg add|SetValue))") ||
+            searchRegex(lower, R"((?:New-ItemProperty|Set-ItemProperty|Remove-ItemProperty|reg add).*\\CurrentVersion\\Run)"))
             report.mitreTechniques.insert("T1547.001");
         if (searchRegex(lower, R"(\bRegister-ScheduledTask\b)"))
             report.mitreTechniques.insert("T1053.005");
-        if (searchRegex(lower, R"(\bRegister-WmiEvent\b|\b__EventFilter\b)") || metrics.hasFunctionNameAccess)
+        // 仅在实际使用 WMI 事件订阅（Register-WmiEvent / __EventFilter）时才判定持久化；
+        // FunctionName/MyInvocation 自省引用与 WMI 无关，不再触发 T1546.003，避免诊断脚本误报。
+        if (searchRegex(lower, R"(\bRegister-WmiEvent\b|\b__EventFilter\b)"))
             report.mitreTechniques.insert("T1546.003");
         if (searchRegex(lower, R"(\bNew-Service\b|\bsc\s+create\b)"))
             report.mitreTechniques.insert("T1543.003");
@@ -799,7 +828,7 @@ private:
         bool onlyGetCommands = !searchRegex(lower, R"(\b(?:Set-|Remove-|New-|Invoke-|Start-|Stop-|Add-|Clear-)\b)")
             && searchRegex(lower, R"(\bGet-\w+\b)");
         bool noNetwork = !searchRegex(lower, R"(\b(?:WebClient|Invoke-WebRequest|Invoke-RestMethod|Download|Upload|TcpClient|Socket)\b)");
-        bool noPersist = !searchRegex(lower, R"(\b(?:CurrentVersion\\Run|Register-ScheduledTask|New-Service|sc create)\b)");
+        bool noPersist = !searchRegex(lower, R"((?:CurrentVersion\\Run.*(?:New-ItemProperty|Set-ItemProperty|Remove-ItemProperty|reg add|SetValue)|Register-ScheduledTask|New-Service|sc create))");
 
         if (onlyGetCommands && noNetwork && noPersist && report.mitreTechniques.empty()) {
             report.riskScore = std::min(report.riskScore, 10);
@@ -851,8 +880,8 @@ protected:
         int caretCount = std::count(script.begin(), script.end(), '^');
         if (caretCount > 10) score += 2;
         else if (caretCount > 5) score += 1;
-        int upperCount = std::count_if(script.begin(), script.end(), ::isupper);
-        int alphaCount = std::count_if(script.begin(), script.end(), ::isalpha);
+        int upperCount = (int)std::count_if(script.begin(), script.end(), ::isupper);
+        int alphaCount = (int)std::count_if(script.begin(), script.end(), ::isalpha);
         if (alphaCount > 0 && upperCount > alphaCount * 0.5) score += 3;
         if (searchRegex(script, R"(\bfor\s+/f\b)") && countRegexMatches(script, R"(%%[a-z])") > 2) score += 2;
         if (lower.find("findstr") != std::string::npos) score += 1;
@@ -1498,6 +1527,16 @@ inline ScriptLanguage detectLanguage(const std::string& script) {
 }
 
 // ============================================================
+// 动态规则加载器（从 rules/batchscan/heuristics.toml 读取）
+// 全局命名空间前向声明：与文件末尾的 DynamicRuleLoader 定义保持一致，
+// 避免在 ContentFingerprint 命名空间内声明造成符号不匹配（LNK2001）。
+// ============================================================
+namespace ContentFingerprint { struct ContentFingerprintRule; }
+namespace DynamicRuleLoader {
+    inline std::vector<ContentFingerprint::ContentFingerprintRule> LoadFileRules(const std::string& rulesPath);
+}
+
+// ============================================================
 // 静态内容指纹规则（原 Behavior Sandbox 中的启发式迁移至此）
 //
 // 高度混淆的脚本（_0x hex-array JS、字符串拆分 VBS、XOR hex 解码
@@ -1556,17 +1595,23 @@ inline std::string ExtractAsciiFromUtf16(const std::string& s) {
 
 // True if the content is an HTA application: HTML wrapper with an
 // inline <script> block (VBScript/JScript) executed by mshta.exe.
+// Strict validation to reduce false positives.
 inline bool IsHtaContent(const std::string& s) {
     std::string low = toLower(s);
-    if (!Contains(low, "<html") && !Contains(low, "<head") &&
-        !Contains(low, "<body") && !Contains(low, "<script")) return false;
-    return Contains(low, "language=\"vbscript\"") ||
-           Contains(low, "language='vbscript'") ||
-           Contains(low, "language=\"jscript\"") ||
-           Contains(low, "language='jscript'") ||
-           Contains(low, "language=\"javascript\"") ||
-           Contains(low, "<script>") ||
-           Contains(low, "mshta") ||
+    // Must have HTML structure AND at least one scripting indicator
+    bool hasHtmlStructure = Contains(low, "<html") || Contains(low, "<head") ||
+                           Contains(low, "<body");
+    bool hasScriptTag = Contains(low, "<script") || Contains(low, "mshta") ||
+                       Contains(low, "hta:application");
+    bool hasScriptingLang = Contains(low, "language=\"vbscript\"") ||
+                           Contains(low, "language='vbscript'") ||
+                           Contains(low, "language=\"jscript\"") ||
+                           Contains(low, "language='jscript'") ||
+                           Contains(low, "language=\"javascript\"");
+
+    // Require both HTML structure AND scripting language, OR explicit HTA indicators
+    return (hasHtmlStructure && hasScriptingLang) ||
+           (hasScriptTag && hasScriptingLang) ||
            Contains(low, "hta:application");
 }
 
@@ -1699,28 +1744,58 @@ inline bool IsRC4Base64Packer(const std::string& s) {
 
 // Detect VBS with heavy comment-based obfuscation (prose comments
 // interleaved with code) that creates WScript.Shell and executes PS.
+// Strict validation to reduce false positives from legitimate commented code.
 inline bool IsCommentObfVBS(const std::string& s) {
     if (s.size() > 5 * 1024 * 1024) return false;
-    bool hasVBS = ContainsPatternCI(s, "createobject") && ContainsPatternCI(s, "wscript.shell") &&
+
+    // Require ALL malicious indicators to be present
+    bool hasVBS = ContainsPatternCI(s, "createobject") &&
+                  ContainsPatternCI(s, "wscript.shell") &&
                   ContainsPatternCI(s, "execute");
     if (!hasVBS) return false;
+
+    // Count comments and code lines
     int commentLines = 0, codeLines = 0;
     std::istringstream iss(s);
     std::string line;
     while (std::getline(iss, line)) {
         std::string trimmed = Trim(line);
         if (trimmed.empty()) continue;
-        if (trimmed[0] == '\'') ++commentLines;
-        else ++codeLines;
+        if (trimmed[0] == '\'') {
+            ++commentLines;
+        } else {
+            ++codeLines;
+        }
     }
-    return commentLines > codeLines / 4 && commentLines > 5;
+
+    // Require significant comment ratio AND minimum counts
+    // Increased threshold: comments must be > 50% of code lines (was 25%)
+    // and absolute count must be > 10 (was 5)
+    return commentLines > codeLines / 2 && commentLines > 10;
 }
 
 struct ContentFingerprintRule {
     std::string family;
     std::function<bool(const std::string&)> matcher;
     int severity = 80;
+    std::string language_hint;   // "all"/"ps1"/"cmd"/"vbs"/"js"/"hta"/"lnk"
 };
+
+// 规则语言标注与实际脚本语言匹配检查：
+// 仅在已明确脚本语言（actual != Unknown）时进行过滤，防止跨语言误报
+// （如 .ps1 命中 LNK/CMD 规则、.js 命中 CMD 规则）；语言未知时不做限制，
+// 保持兼容（LNK/HTA 二进制等无法识别语言的样本仍可命中任意规则）。
+inline bool RuleLanguageMatches(const std::string& hint, ScriptLanguage actual) {
+    if (hint.empty() || hint == "all") return true;        // 语言无关规则
+    if (actual == ScriptLanguage::Unknown) return true;    // 实际语言未知，不限制
+    switch (actual) {
+    case ScriptLanguage::PowerShell: return hint == "ps1";
+    case ScriptLanguage::CMD:        return hint == "cmd";
+    case ScriptLanguage::VBS:        return hint == "vbs";
+    case ScriptLanguage::JavaScript: return hint == "js" || hint == "hta";
+    default: return true;
+    }
+}
 
 inline std::vector<ContentFingerprintRule> BuildContentFingerprintRules() {
     std::vector<ContentFingerprintRule> rules;
@@ -2002,6 +2077,7 @@ inline std::vector<ContentFingerprintRule> BuildContentFingerprintRules() {
     rules.push_back({"BSD/Trojan-Obfuscated.JS.CyrillicCipher",
         [](const std::string& s) -> bool {
             if (s.size() > 5 * 1024 * 1024) return false;
+            // Require more Cyrillic characters to reduce false positives
             if (!Contains(s, "{") || !Contains(s, "}")) return false;
             bool isUTF16LE = (s.size() >= 2 &&
                               (unsigned char)s[0] == 0xFF && (unsigned char)s[1] == 0xFE);
@@ -2027,15 +2103,18 @@ inline std::vector<ContentFingerprintRule> BuildContentFingerprintRules() {
                     }
                 }
             }
-            if (cyrillicCount < 10) return false;
+            // Increased minimum threshold from 10 to 30 to reduce false positives
+            if (cyrillicCount < 30) return false;
+            // Require decoder function OR multiple obfuscation indicators
             bool hasDecoderFunc = ContainsPattern(s, "charAt") ||
                                   ContainsPattern(s, "charCodeAt") ||
                                   ContainsPattern(s, "fromcharcode");
             if (hasDecoderFunc) return true;
-            if (cyrillicCount >= 30 && ContainsPattern(s, "+=")) return true;
-            if (cyrillicCount >= 50 && ContainsPattern(s, "function")) return true;
+            // Require higher count with additional indicators
+            if (cyrillicCount >= 60 && ContainsPattern(s, "+=")) return true;
+            if (cyrillicCount >= 100 && ContainsPattern(s, "function")) return true;
             return false;
-        }, 88});
+        }, 80});  // Reduced severity from 88 to 80 (was CRITICAL, now HIGH)
 
     rules.push_back({"BSD/Trojan-Dropper.JS.HexArray",
         [](const std::string& s) -> bool {
@@ -2129,10 +2208,18 @@ inline std::vector<ContentFingerprintRule> BuildContentFingerprintRules() {
             while ((pos = low.find("'+'", pos)) != std::string::npos) {
                 ++concatCount; ++pos;
             }
-            if (concatCount < 3) return false;
-            return Contains(low, "wscript") || Contains(low, "powershell") ||
-                   Contains(low, "scripting") || Contains(low, "activexobject");
-        }, 82});
+            // Increased threshold from 3 to 8 to reduce false positives
+            // Legitimate code rarely uses more than 8 string concatenations
+            if (concatCount < 8) return false;
+            // Require multiple malicious indicators
+            int maliciousCount = 0;
+            if (Contains(low, "wscript")) ++maliciousCount;
+            if (Contains(low, "powershell")) ++maliciousCount;
+            if (Contains(low, "scripting")) ++maliciousCount;
+            if (Contains(low, "activexobject")) ++maliciousCount;
+            // Require at least 2 malicious indicators to confirm obfuscation
+            return maliciousCount >= 2;
+        }, 75});  // Reduced severity from 82 to 75 (was HIGH, now MEDIUM-HIGH)
 
     // JS/VBS XOR hex-decoder dropper: fromCharCode + parseInt hex string,
     // XOR key, reading own script to extract encoded payload.
@@ -2179,9 +2266,30 @@ inline std::vector<ContentFingerprintRule> BuildContentFingerprintRules() {
 }
 
 // 匹配第一个命中的内容指纹规则；命中则输出 family + severity 并返回 true。
-inline bool Match(const std::string& content, std::string& family, int& severity) {
-    static const auto rules = BuildContentFingerprintRules();
-    for (const auto& r : rules) {
+// 优先使用规则文件（rules/batchscan/heuristics.toml），若文件不存在则回退到内嵌规则。
+// langHint：脚本实际语言（来自后缀名/内容检测），用于按规则 language_hint 过滤跨语言误报。
+inline bool Match(const std::string& content, std::string& family, int& severity, ScriptLanguage langHint = ScriptLanguage::Unknown) {
+    // 尝试从文件加载规则（只加载一次，结果缓存）
+    static std::vector<ContentFingerprintRule> fileRules = []() -> std::vector<ContentFingerprintRule> {
+        // 规则文件路径：与可执行文件同目录的 Resources\rules\batchscan\heuristics.toml
+        std::string exePath;
+        char buf[MAX_PATH] = {0};
+        DWORD n = GetModuleFileNameA(NULL, buf, MAX_PATH);
+        if (n > 0) {
+            std::string p(buf);
+            size_t pos = p.rfind('\\');
+            if (pos != std::string::npos) p = p.substr(0, pos);
+            exePath = p + "\\Resources\\rules\\batchscan\\heuristics.toml";
+        }
+        auto rules = DynamicRuleLoader::LoadFileRules(exePath);
+        if (!rules.empty()) {
+            // 文件规则加载成功，使用文件规则（不再与内嵌规则合并）
+            return rules;
+        }
+        return ContentFingerprint::BuildContentFingerprintRules();
+    }();
+    for (const auto& r : fileRules) {
+        if (!RuleLanguageMatches(r.language_hint, langHint)) continue;
         if (r.matcher(content)) {
             family = r.family;
             severity = r.severity;
@@ -2192,6 +2300,191 @@ inline bool Match(const std::string& content, std::string& family, int& severity
 }
 
 } // namespace ContentFingerprint
+
+// ============================================================
+// 动态规则加载器（从 rules/batchscan/heuristics.toml 读取）
+// ============================================================
+namespace DynamicRuleLoader {
+
+struct HeuristicRule {
+    std::string family;
+    int severity = 80;
+    std::vector<std::string> patterns;    // 必含子串（不区分大小写）
+    std::vector<std::string> exclude_patterns; // 包含则跳过
+    size_t min_size = 0;
+    size_t max_size = 0;
+    std::string language_hint;            // "all"/"ps1"/"cmd"/"vbs"/"js"/"hta"/"lnk"
+};
+
+// 简单 TOML 分块解析器，只解析 [[rule]] 块中的 key = value / "string" 字段
+inline std::vector<std::string> SplitLines(const std::string& s) {
+    std::vector<std::string> lines;
+    std::istringstream iss(s);
+    std::string line;
+    while (std::getline(iss, line)) {
+        // trim trailing \r
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        lines.push_back(line);
+    }
+    return lines;
+}
+
+inline std::string TrimStr(const std::string& s) {
+    size_t a = 0;
+    while (a < s.size() && std::isspace((unsigned char)s[a])) ++a;
+    size_t b = s.size();
+    while (b > a && std::isspace((unsigned char)s[b - 1])) --b;
+    return s.substr(a, b - a);
+}
+
+// 去除 TOML 字符串中的引号
+inline std::string Unquote(const std::string& s) {
+    std::string t = TrimStr(s);
+    if (t.size() >= 2 && t.front() == '"' && t.back() == '"')
+        return t.substr(1, t.size() - 2);
+    return t;
+}
+
+// 从 "[ \"a\", \"b\" ]" 片段中解析字符串数组（兼容单行/跨行、忽略非字符串 token）
+inline std::vector<std::string> ParseStringArray(const std::string& s) {
+    std::vector<std::string> out;
+    size_t i = 0;
+    while (i < s.size()) {
+        if (s[i] == '"') {
+            size_t j = i + 1;
+            std::string cur;
+            while (j < s.size() && s[j] != '"') { cur += s[j]; ++j; }
+            if (!cur.empty()) out.push_back(cur);
+            i = j + 1;
+        } else {
+            ++i;
+        }
+    }
+    return out;
+}
+
+inline bool ParseSimpleToml(const std::string& block, HeuristicRule& rule) {
+    rule = HeuristicRule();
+    std::vector<std::string> lines = SplitLines(block);
+
+    // 收集跨行数组：直到出现 "]" 为止
+    auto collectArray = [&lines](size_t& li, const std::string& val) -> std::string {
+        std::string arr = val;
+        while (arr.find(']') == std::string::npos && li + 1 < lines.size()) {
+            ++li;
+            arr += " " + lines[li];
+        }
+        return arr;
+    };
+
+    for (size_t li = 0; li < lines.size(); ++li) {
+        std::string trimmed = TrimStr(lines[li]);
+        if (trimmed.empty() || trimmed[0] == '#') continue;
+        // 跳过表头（如 [[rule]]）
+        if (trimmed[0] == '[') continue;
+
+        size_t eq = trimmed.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = TrimStr(trimmed.substr(0, eq));
+        std::string val = TrimStr(trimmed.substr(eq + 1));
+
+        if (key == "family")          rule.family = Unquote(val);
+        else if (key == "severity")   rule.severity = std::stoi(Unquote(val));
+        else if (key == "min_size")   rule.min_size = (size_t)std::stoul(Unquote(val));
+        else if (key == "max_size")   rule.max_size = (size_t)std::stoul(Unquote(val));
+        else if (key == "language_hint") rule.language_hint = Unquote(val);
+        else if (key == "patterns") {
+            auto items = ParseStringArray(collectArray(li, val));
+            rule.patterns.insert(rule.patterns.end(), items.begin(), items.end());
+        }
+        else if (key == "exclude_patterns") {
+            auto items = ParseStringArray(collectArray(li, val));
+            rule.exclude_patterns.insert(rule.exclude_patterns.end(), items.begin(), items.end());
+        }
+    }
+    return !rule.family.empty();
+}
+
+// 从文件路径提取 block（[[rule]]...--- 之间的内容）
+inline std::vector<HeuristicRule> LoadHeuristicRulesFromFile(const std::string& path) {
+    std::vector<HeuristicRule> rules;
+    std::ifstream f(path, std::ios::binary);
+    if (!f.is_open()) return rules;
+    std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    f.close();
+
+    // 按 --- 分隔符切块
+    std::vector<std::string> blocks;
+    std::istringstream iss(content);
+    std::string block;
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (TrimStr(line) == "---") {
+            if (!block.empty()) blocks.push_back(block);
+            block.clear();
+        } else {
+            block += line + "\n";
+        }
+    }
+    if (!block.empty()) blocks.push_back(block);
+
+    for (const auto& b : blocks) {
+        if (b.find("[[rule]]") == std::string::npos) continue;
+        HeuristicRule rule;
+        if (ParseSimpleToml(b, rule) && !rule.family.empty() && !rule.patterns.empty()) {
+            rules.push_back(rule);
+        }
+    }
+    return rules;
+}
+
+// 将规则转换为 ContentFingerprint 风格的 matcher
+// pattern / exclude_pattern 均支持 "|" 分隔的多备选（任一命中即算命中）
+inline std::function<bool(const std::string&)> MakeMatcher(const HeuristicRule& r) {
+    return [r](const std::string& content) -> bool {
+        if (content.size() < r.min_size) return false;
+        if (r.max_size > 0 && content.size() > r.max_size) return false;
+        std::string lowContent = toLower(content);
+
+        // 任一备选命中（"|" 分隔；忽略空备选）
+        auto matchesAny = [&](const std::string& pat) -> bool {
+            std::string lowP = toLower(pat);
+            std::istringstream ss(lowP);
+            std::string alt;
+            while (std::getline(ss, alt, '|')) {
+                if (!alt.empty() && lowContent.find(alt) != std::string::npos) return true;
+            }
+            return false;
+        };
+
+        // 命中任一 exclude_patterns 则跳过此规则（降低误报）
+        for (const auto& ep : r.exclude_patterns) {
+            if (matchesAny(ep)) return false;
+        }
+        // 所有 patterns 必须全部命中
+        for (const auto& p : r.patterns) {
+            if (!matchesAny(p)) return false;
+        }
+        return true;
+    };
+}
+
+// 全局缓存规则，首次调用时从文件加载
+inline std::vector<ContentFingerprint::ContentFingerprintRule> LoadFileRules(const std::string& rulesPath) {
+    auto tomlRules = LoadHeuristicRulesFromFile(rulesPath);
+    std::vector<ContentFingerprint::ContentFingerprintRule> result;
+    for (const auto& tr : tomlRules) {
+        ContentFingerprint::ContentFingerprintRule cr;
+        cr.family = tr.family;
+        cr.severity = tr.severity;
+        cr.language_hint = tr.language_hint;
+        cr.matcher = MakeMatcher(tr);
+        result.push_back(cr);
+    }
+    return result;
+}
+
+} // namespace DynamicRuleLoader
 
 // ============================================================
 // 统一引擎（含文件扫描接口）
@@ -2205,21 +2498,72 @@ public:
         {
             std::string fpFamily;
             int fpSeverity = 0;
-            if (ContentFingerprint::Match(script, fpFamily, fpSeverity)) {
-                RiskReport report;
-                report.language = ScriptLanguage::Unknown;
-                report.isMalicious = true;
-                report.riskScore = fpSeverity;
-                report.family = fpFamily;
-                if (fpSeverity >= 80) report.riskLevel = "CRITICAL";
-                else if (fpSeverity >= 60) report.riskLevel = "HIGH";
-                else report.riskLevel = "MEDIUM";
-                report.reasons.push_back("内容指纹命中: " + fpFamily);
-                return report;
+            if (ContentFingerprint::Match(script, fpFamily, fpSeverity, hint)) {
+                // 如果提供了语言提示，验证家族是否与语言匹配
+                // 避免 .ps1 被误报为 JS/VBS 家族（如 JSPacker、VBSDropper 等）
+                bool langMismatch = false;
+                if (hint != ScriptLanguage::Unknown) {
+                    // JS 家族规则只适用于 JS/VBS 脚本
+                    if ((hint == ScriptLanguage::PowerShell || hint == ScriptLanguage::CMD) &&
+                        (fpFamily.find("JSPacker") != std::string::npos ||
+                         fpFamily.find("JS.HexArray") != std::string::npos ||
+                         fpFamily.find("JS.SwitchVM") != std::string::npos ||
+                         fpFamily.find("JS.XORHex") != std::string::npos ||
+                         fpFamily.find("JS.Dropper") != std::string::npos ||
+                         fpFamily.find("JS.StringConcat") != std::string::npos ||
+                         fpFamily.find("JS.Cyrillic") != std::string::npos)) {
+                        langMismatch = true;
+                    }
+                    // VBS 家族规则只适用于 VBS 脚本
+                    if (hint == ScriptLanguage::PowerShell &&
+                        (fpFamily.find("VBS.CommentObf") != std::string::npos ||
+                         fpFamily.find("VBS.DanishDropper") != std::string::npos ||
+                         fpFamily.find("VBS.PSReconstruct") != std::string::npos ||
+                         fpFamily.find("VBS.StringSplit") != std::string::npos)) {
+                        langMismatch = true;
+                    }
+                    // HTA 家族规则只适用于 HTA/JS/VBS 脚本
+                    if (hint == ScriptLanguage::PowerShell &&
+                        (fpFamily.find("HTA") != std::string::npos ||
+                         fpFamily.find("HTADropper") != std::string::npos ||
+                         fpFamily.find("HTAStealer") != std::string::npos ||
+                         fpFamily.find("HTAWebshell") != std::string::npos ||
+                         fpFamily.find("HTA.Unicode") != std::string::npos)) {
+                        langMismatch = true;
+                    }
+                    // LNK 家族规则只适用于 LNK 文件（通过扩展名判断）
+                    // LNK 文件通常通过 IsLnkContent 检测，不涉及语言提示
+                }
+
+                if (!langMismatch) {
+                    RiskReport report;
+                    report.language = ScriptLanguage::Unknown;
+                    report.isMalicious = true;
+                    report.riskScore = fpSeverity;
+                    report.family = fpFamily;
+                    if (fpSeverity >= 85) report.riskLevel = "CRITICAL";
+                    else if (fpSeverity >= 70) report.riskLevel = "HIGH";
+                    else report.riskLevel = "MEDIUM";
+                    report.reasons.push_back("内容指纹命中: " + fpFamily);
+                    return report;
+                }
             }
         }
 
-        ScriptLanguage lang = (hint != ScriptLanguage::Unknown) ? hint : detectLanguage(script);
+        // 完全信任后缀名提示，不做内容检测兜底
+        // 如果 hint 为 Unknown，直接返回清洁结果
+        ScriptLanguage lang = (hint != ScriptLanguage::Unknown) ? hint : ScriptLanguage::Unknown;
+
+        if (lang == ScriptLanguage::Unknown) {
+            RiskReport report;
+            report.language = ScriptLanguage::Unknown;
+            report.isMalicious = false;
+            report.riskScore = 0;
+            report.riskLevel = "LOW";
+            report.family = "Unknown.Script";
+            report.reasons.push_back("未知文件后缀，跳过分析");
+            return report;
+        }
 
         std::unique_ptr<LanguageDetector> detector;
         switch (lang) {
@@ -2250,12 +2594,23 @@ public:
         }
 
         ScriptLanguage lang = ScriptLanguage::Unknown;
-        if (ext == ".ps1") lang = ScriptLanguage::PowerShell;
+        if      (ext == ".ps1" || ext == ".psm1" || ext == ".psd1" || ext == ".ps1xml" || ext == ".psc1" || ext == ".cdxml") lang = ScriptLanguage::PowerShell;
         else if (ext == ".bat" || ext == ".cmd") lang = ScriptLanguage::CMD;
-        else if (ext == ".vbs") lang = ScriptLanguage::VBS;
+        else if (ext == ".vbs" || ext == ".vbe") lang = ScriptLanguage::VBS;
         else if (ext == ".js" || ext == ".jse" || ext == ".wsf") lang = ScriptLanguage::JavaScript;
         else if (ext == ".c" || ext == ".cpp" || ext == ".h" || ext == ".hpp") lang = ScriptLanguage::Cpp;
-        // 如果后缀不识别，内部将自动探测
+        // 完全信任后缀名，不做内容检测兜底
+        // 如果后缀名不符合已知脚本格式，直接跳过
+        if (lang == ScriptLanguage::Unknown) {
+            RiskReport skipped;
+            skipped.language = ScriptLanguage::Unknown;
+            skipped.isMalicious = false;
+            skipped.riskScore = 0;
+            skipped.riskLevel = "LOW";
+            skipped.family = "Unknown.Script";
+            skipped.reasons.push_back("未知文件后缀，跳过分析: " + ext);
+            return skipped;
+        }
 
         // 读取文件（最大 20MB，防止大文件崩溃）
         std::ifstream file(filePath, std::ios::binary | std::ios::ate);

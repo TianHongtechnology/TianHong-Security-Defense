@@ -1,0 +1,1597 @@
+# ============================================================
+# Sandbox Behavior Chain Rules — 沙盒行为链检测规则（v2 重构）
+# ============================================================
+# 结构说明：
+#   Part 1 单步致命强信号 —— 命中即判定，无需链（MBR 覆写/破坏型）
+#   Part 2 通用攻击链 —— 家族共享 TTP，合并重复模板，降低规则冗余
+#   Part 3 家族专属链 —— 行为序列有真实区分度的家族（下载器/银行木马/RAT）
+#   Part 4 家族签名规则 —— 家族独有指标（加密扩展名/勒索信/外传信道/C2/内存标记）
+#   Part 5 银狐脚本行为链 —— 参考 2025-2026 最新银狐攻击流程
+#
+# 重构动机：
+#   旧版把"窃密/勒索"这类行为模板完全相同的家族各写一条 3 步链，
+#   导致同一模板重复十几遍，链本身不具家族区分度 → 不适合当行为链。
+#   重构后：共同行为收敛为通用链（Part 2），家族独有指标收敛为签名规则（Part 4）。
+#
+# 格式说明：
+#   [[rule]]           — 一条检测规则
+#   family             — 家族名称
+#   severity           — 严重度（1-100，仅供参考，实际分数由命中步数计算）
+#   mode               — 可选：匹配模式
+#                        "chain"    = 按链匹配（需按步骤先后顺序命中，默认）
+#                        "behavior" = 按行为匹配（仅需各步骤条件被满足，不要求顺序）
+#   min_match          — 最少命中的步骤数（1 = 直接命中，无需链）
+#   steps              — 步骤数组（按真实行为发生的先后顺序排列）
+#     - action         — 行为类型：NetworkConnect / FileWrite / FileRead /
+#                        FileOpen / FileClose / FileDelete / ProcessCreate /
+#                        ProcessHollowing / RegSetValue / RegRead / RegDelete /
+#                        RegSave / BackupDeletion / ServiceStop / SystemConfig /
+#                        ReflectionLoad / MemoryAlloc / SchtasksCreate /
+#                        WMIRemoteExec / WMICQuery / IEXExecute / Base64Decode /
+#                        EnvSet / VarRead / ActiveXObject / NamedPipeConnect /
+#                        NamedPipeRead / NamedPipeWrite / RawDiskWrite
+#     - pattern        — 可选：target 或 details 中需包含的子串（大小写不敏感）
+#     - path_contains  — 可选：target 路径中需包含的子串
+#     - path_endswith  — 可选：target 路径后缀匹配
+#     - detail_contains — 可选：details 中需包含的子串
+#   max_interval       — 可选：相邻步骤最大时间间隔（ticks，默认30）
+#
+# 解析器约定（重要）：
+#   * 本文件由项目内置的简易 TOML 解析器读取（Unquote 仅去除引号，不做转义处理），
+#     因此路径中的反斜杠请写成单个 "\"（如 "\run"），不要写成 "\\run"，
+#     否则将无法匹配沙盒中记录的 "C:\...\run" 目标。
+#   * 每个 step 的值内不能包含英文逗号 ","（解析器以逗号作为字段分隔），
+#     多备选请使用 "|" 分隔（如 pattern = "mshta|regsvr32|rundll32"）。
+#   * steps = [ 与 ] 必须各占一行；step 对象可单行或跨行，但必须保持 { } 配对。
+# ============================================================
+
+
+# ============================================================
+# Part 1 — 单步致命强信号（命中即判定，无需链）
+# ============================================================
+
+# ---------- MBR / 磁盘引导覆写 ----------
+# 对物理磁盘直接写盘（\Device\Harddisk0 或 dd 命令）＝ 破坏型攻击，一发即致命。
+[[rule]]
+family = "BSD/Trojan-Dropper.Win32.MBRWriter"
+severity = 100
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "RawDiskWrite", pattern = "physicaldrive|device\harddisk|dd " },
+]
+
+---
+
+# ---------- WinKiller 类破坏型 ----------
+# 全盘文件删除 + taskkill + 注册表关键项删除，三重破坏行为组合才判定。
+[[rule]]
+family = "BSD/Trojan-Dropper.Win32.WinKiller"
+severity = 98
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "FileDelete", path_contains = "mass_delete|*.*|\efi|x:\" },
+    { action = "ProcessCreate", pattern = "taskkill" },
+    { action = "RegDelete", pattern = "hku\|hkcr\|hklm\|sam|security|bcd" },
+]
+
+---
+
+# ---------- Generic 破坏型（Wiper） ----------
+# 裸写盘为致命信号，再叠加删除行为才判定（避免"正常卸载=删文件+删注册表"误报）。
+[[rule]]
+family = "BSD/Generic.Wiper"
+severity = 95
+mode = "behavior"
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "RawDiskWrite", pattern = "" },
+    { action = "FileDelete", pattern = "" },
+    { action = "RegDelete", pattern = "" },
+]
+
+---
+
+# ============================================================
+# Part 2 — 通用攻击链（家族共享 TTP）
+# ============================================================
+
+# ---------- Generic: 凭据窃取（合并窃密家族） ----------
+# 合并前各家族（行为模板完全相同，链不具区分度，已合并）：
+#   LummaStealer / RedLine / Vidar / Raccoon / Stealc / RisePro / MysticStealer /
+#   MeduzaStealer / MetaStealer / FickerStealer / Rhadamanthys / AgentTesla /
+#   LokiBot / HawkEye / SnakeKeylogger / FormBook / Pony / MarsStealer / AZORult /
+#   WarzoneRAT / SilverFox
+# 家族特征（用于家族签名规则，见 Part 4.2）：
+#   * AgentTesla        — SetWindowsHookEx 键盘记录；SMTP(:587)/FTP(:21)/HTTP 外传（Tor 匿名）
+#   * LokiBot/HawkEye   — 键盘/剪贴板记录；SMTP :25/:587 外传
+#   * RedLine           — .NET，进程镂空进 regsvcs.exe；wmic 收集系统信息；面板外传
+#   * LummaStealer      — 覆盖 80+ 浏览器/70+ 钱包；C2 域名轮换；外传伪装 .png/.gif
+#   * Stealc            — 模块化构建；浏览器凭据 + 钱包
+#   * RisePro/Meduza/Meta/Ficker — 经 Telegram API 外传
+#   * Rhadamanthys      — AI OCR 识别钱包助记词
+#   * Raccoon v2        — 会话 Cookie（绕过 MFA）；FTP 外传
+#   * Vidar             — Steam/Telegram/GitHub 等公开平台 dead-drop 配置拉取
+[[rule]]
+family = "BSD/Generic.CredentialTheft"
+severity = 88
+mode = "behavior"
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "FileRead", path_contains = "login data|cookies|web data|key4.db|logins.json|wallet|autofill|leveldb" },
+    { action = "FileWrite", path_endswith = ".zip|.7z|.rar|.txt|.log|.bin" },
+    { action = "NetworkConnect", pattern = "http|ftp|smtp|telegram|discord|:443|:21|:25|:587|.php" },
+]
+
+---
+
+# ---------- Generic: 勒索加密（合并勒索家族） ----------
+# 合并前各家族（加密扩展名/勒索信/卷影破坏，模板相同，链不具区分度，已合并）：
+#   LockBit / Conti / REvil / BlackCat / Hive / DarkSide / Clop / Ryuk / BlackMatter /
+#   Pysa / Maze / Egregor / Akira / BlackBasta / Royal / AvosLocker / RansomEXX /
+#   Play / Cuba / ViceSociety
+# 家族特征（加密扩展名指纹 → Part 4.1 单步签名规则）：
+#   * LockBit 3.0/Black — .lockbit，新版本随机 16 位扩展名；{扩展名}.README 勒索信
+#   * Akira / BlackBasta / BlackCat / Hive / Royal / Play 等均为 RaaS，双重重吓
+#   * BlackBasta        — .basta；*-README.txt / HOW_TO_DECRYPT.txt；ChaCha20+RSA-4096
+#   * BlackCat(ALPHV)   — .blackcat；.onion 泄漏站
+#   * 卷影破坏 / 备份删除 / 关闭服务为共同 TTP，由本通用链兜底
+[[rule]]
+family = "BSD/Generic.RansomwareEncryptor"
+severity = 92
+mode = "behavior"
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_contains = "desktop|documents|downloads|pictures" },
+    { action = "FileDelete", pattern = "" },
+    { action = "BackupDeletion", pattern = "" },
+]
+
+---
+
+# ---------- Generic: 下载器 ----------
+[[rule]]
+family = "BSD/Generic.Downloader"
+severity = 84
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "http|ftp" },
+    { action = "FileWrite", path_contains = "temp|appdata|public|programdata|downloads" },
+    { action = "ProcessCreate", pattern = "wscript|cscript|powershell|mshta|regsvr32|rundll32|cmd|.exe" },
+]
+
+---
+
+# ---------- Generic: 持久化 ----------
+[[rule]]
+family = "BSD/Generic.Persistence"
+severity = 84
+mode = "behavior"
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_contains = "appdata\roaming\microsoft\windows\start menu" },
+    { action = "RegSetValue", path_contains = "\run" },
+    { action = "SchtasksCreate", pattern = "" },
+]
+
+---
+
+# ---------- Generic: 防御规避 ----------
+[[rule]]
+family = "BSD/Generic.DefenseEvasion"
+severity = 88
+mode = "behavior"
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "RegSetValue", detail_contains = "defender|disable|firewall" },
+    { action = "ServiceStop", pattern = "" },
+    { action = "ProcessCreate", pattern = "powershell|cmd.exe" },
+]
+
+---
+
+# ---------- Generic: C2 后门 ----------
+[[rule]]
+family = "BSD/Generic.C2Backdoor"
+severity = 84
+mode = "behavior"
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = ":443|:80|:8080|http" },
+    { action = "RegSetValue", path_contains = "\run" },
+    { action = "ProcessCreate", pattern = "cmd.exe|powershell" },
+]
+
+---
+
+# ---------- Generic: LOLBin 加载器 ----------
+[[rule]]
+family = "BSD/Generic.LOLBinLoader"
+severity = 84
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "ProcessCreate", pattern = "mshta|regsvr32|rundll32|cscript|wscript" },
+    { action = "FileWrite", path_contains = "temp|appdata", path_endswith = ".dll|.js|.vbs|.sct" },
+    { action = "NetworkConnect", pattern = "http" },
+]
+
+---
+
+# ---------- Generic: 浏览器窃密 ----------
+[[rule]]
+family = "BSD/Generic.BrowserStealer"
+severity = 87
+mode = "behavior"
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "FileRead", path_contains = "login data|web data|cookies.sqlite|logins.json" },
+    { action = "FileRead", path_contains = "chrome|firefox|edge|brave|opera" },
+    { action = "FileWrite", path_endswith = ".zip|.7z|.rar" },
+    { action = "NetworkConnect", pattern = "http|ftp|:443" },
+]
+
+---
+
+# ---------- Generic: 加密货币钱包窃取 ----------
+[[rule]]
+family = "BSD/Generic.CryptoWalletStealer"
+severity = 88
+mode = "behavior"
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "FileRead", path_contains = "wallet|wallet.dat|exodus|metamask|atomic" },
+    { action = "FileWrite", path_endswith = ".zip|.7z" },
+    { action = "NetworkConnect", pattern = "http|ftp|telegram|discord" },
+]
+
+---
+
+# ---------- Generic: FTP/邮件窃密外传 ----------
+[[rule]]
+family = "BSD/Generic.ExfilFTP"
+severity = 86
+mode = "behavior"
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "FileRead", path_contains = "cookies|login data|wallet" },
+    { action = "FileWrite", path_endswith = ".zip|.txt" },
+    { action = "NetworkConnect", pattern = "ftp|:21|:25|:587" },
+]
+
+---
+
+# ---------- Generic: 内存加载器（混淆脚本） ----------
+[[rule]]
+family = "BSD/Generic.InMemoryLoader"
+severity = 82
+mode = "behavior"
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "IEXExecute", pattern = "" },
+    { action = "Base64Decode", pattern = "" },
+    { action = "ReflectionLoad", pattern = "" },
+]
+
+---
+
+# ---------- Generic: 备份/卷影破坏 ----------
+[[rule]]
+family = "BSD/Generic.BackupDeletion"
+severity = 90
+mode = "behavior"
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "BackupDeletion", pattern = "" },
+    { action = "FileDelete", pattern = "" },
+    { action = "RegDelete", pattern = "bcd|sam|security|system" },
+]
+
+---
+
+# ============================================================
+# Part 3 — 家族专属链（行为序列有真实区分度）
+# ============================================================
+
+# ---------- Emotet ----------
+[[rule]]
+family = "BSD/Trojan-Downloader.Win32.Emotet"
+severity = 85
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "invoice|doc" },
+    { action = "FileWrite", path_contains = "programdata", path_endswith = ".dll" },
+    { action = "ProcessCreate", pattern = "rundll32" },
+    { action = "SchtasksCreate", pattern = "" },
+    { action = "RegSave", pattern = "" },
+]
+
+---
+
+# ---------- TrickBot ----------
+# 反射加载 + 域信息收集 + WMI 横向，链区分度高。
+[[rule]]
+family = "BSD/Trojan-Banker.Win32.TrickBot"
+severity = 88
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "ReflectionLoad", pattern = "reflect" },
+    { action = "ProcessCreate", pattern = "nltest|net group|domain admins" },
+    { action = "WMIRemoteExec", pattern = "" },
+    { action = "FileWrite", path_contains = "appdata", path_endswith = ".zip" },
+    { action = "RegSetValue", detail_contains = "defender|disable" },
+]
+
+---
+
+# ---------- Cobalt Strike ----------
+[[rule]]
+family = "BSD/Trojan-Dropper.Win32.CobaltStrike"
+severity = 85
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "ReflectionLoad", detail_contains = ".net assembly" },
+    { action = "NamedPipeConnect", pattern = "" },
+    { action = "ProcessCreate", pattern = "msbuild" },
+]
+
+---
+
+# ---------- DarkGate ----------
+# Discord 投递 + AutoIt 落地 + 进程镂空，链区分度高。
+[[rule]]
+family = "BSD/Trojan-Downloader.Win32.DarkGate"
+severity = 84
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "discord" },
+    { action = "FileWrite", path_endswith = ".au3" },
+    { action = "ProcessCreate", pattern = "autoit" },
+    { action = "ProcessHollowing", pattern = "" },
+]
+
+---
+
+# ---------- QakBot ----------
+[[rule]]
+family = "BSD/Trojan-Banker.Win32.QakBot"
+severity = 83
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", path_endswith = ".html|.dll" },
+    { action = "FileWrite", path_contains = "programdata|public", path_endswith = ".dll" },
+    { action = "ProcessCreate", pattern = "regsvr32" },
+    { action = "SchtasksCreate", pattern = "regsvr32" },
+]
+
+---
+
+# ---------- IcedID ----------
+[[rule]]
+family = "BSD/Trojan-Banker.Win32.IcedID"
+severity = 82
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", path_endswith = ".zip|.cab" },
+    { action = "FileWrite", path_endswith = ".dll", path_contains = "programdata|appdata" },
+    { action = "ProcessCreate", pattern = "rundll32.*icedid" },
+]
+
+---
+
+# ---------- BumbleBee ----------
+[[rule]]
+family = "BSD/Trojan-Downloader.Win32.BumbleBee"
+severity = 81
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", path_endswith = ".iso|.img" },
+    { action = "FileWrite", path_endswith = ".lnk" },
+    { action = "ProcessCreate", pattern = "powershell" },
+]
+
+---
+
+# ---------- Remcos ----------
+[[rule]]
+family = "BSD/Trojan-Spy.Win32.Remcos"
+severity = 84
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_contains = "remcos" },
+    { action = "RegSetValue", path_contains = "\run" },
+    { action = "ProcessHollowing", pattern = "" },
+]
+
+---
+
+# ---------- AsyncRAT ----------
+[[rule]]
+family = "BSD/Trojan-Spy.Win32.AsyncRAT"
+severity = 85
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "pastebin" },
+    { action = "ProcessCreate", pattern = "powershell" },
+    { action = "ProcessHollowing", pattern = "" },
+    { action = "RegSetValue", path_contains = "\run" },
+    { action = "NetworkConnect", pattern = ":" },
+]
+
+---
+
+# ---------- Dridex ----------
+[[rule]]
+family = "BSD/Trojan-Banker.Win32.Dridex"
+severity = 85
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = ".exe|.dll|payload" },
+    { action = "FileWrite", path_contains = "appdata|temp", path_endswith = ".dll" },
+    { action = "ProcessHollowing", pattern = "" },
+    { action = "RegSetValue", path_contains = "\run" },
+]
+
+---
+
+# ---------- Ursnif ----------
+[[rule]]
+family = "BSD/Trojan-Banker.Win32.Ursnif"
+severity = 83
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = ".php" },
+    { action = "FileWrite", path_endswith = ".dll", path_contains = "appdata" },
+    { action = "RegSetValue", path_contains = "\run" },
+]
+
+---
+
+# ---------- ZeuS ----------
+[[rule]]
+family = "BSD/Trojan-Banker.Win32.ZeuS"
+severity = 84
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "gate.php" },
+    { action = "ProcessHollowing", pattern = "zeus" },
+    { action = "RegSetValue", path_contains = "\run" },
+]
+
+---
+
+# ---------- DanaBot ----------
+[[rule]]
+family = "BSD/Trojan-Banker.Win32.DanaBot"
+severity = 82
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = ".exe" },
+    { action = "FileWrite", path_endswith = ".exe", path_contains = "programdata" },
+    { action = "SchtasksCreate", pattern = "" },
+]
+
+---
+
+# ---------- SmokeLoader ----------
+[[rule]]
+family = "BSD/TrojanDownloader.SmokeLoader"
+severity = 83
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "smokeloader" },
+    { action = "FileWrite", path_endswith = ".dll", path_contains = "temp" },
+    { action = "ProcessCreate", pattern = "rundll32" },
+]
+
+---
+
+# ---------- GootLoader ----------
+[[rule]]
+family = "BSD/TrojanDownloader.GootLoader"
+severity = 82
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "gootloader" },
+    { action = "ProcessCreate", pattern = "mshta|regsvr32" },
+    { action = "FileWrite", path_endswith = ".dll" },
+]
+
+---
+
+# ---------- SocGholish ----------
+[[rule]]
+family = "BSD/TrojanDownloader.SocGholish"
+severity = 82
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "socgholish" },
+    { action = "FileWrite", path_endswith = ".js" },
+    { action = "ProcessCreate", pattern = "mshta|wscript" },
+]
+
+---
+
+# ---------- GuLoader ----------
+[[rule]]
+family = "BSD/TrojanDownloader.Win32.GuLoader"
+severity = 84
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "http" },
+    { action = "FileWrite", path_contains = "appdata|temp", path_endswith = ".dll|.exe|.bin" },
+    { action = "ProcessCreate", pattern = "rundll32|mshta|regsvr32" },
+]
+
+---
+
+# ---------- Zloader ----------
+[[rule]]
+family = "BSD/Trojan-Banker.Win32.Zloader"
+severity = 84
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = ".php|.js" },
+    { action = "RegSetValue", path_contains = "\run" },
+    { action = "ProcessCreate", pattern = "rundll32" },
+]
+
+---
+
+# ---------- BazarLoader ----------
+[[rule]]
+family = "BSD/Trojan-Downloader.Win32.BazarLoader"
+severity = 84
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", path_endswith = ".html|.js" },
+    { action = "FileWrite", path_contains = "programdata|appdata", path_endswith = ".dll" },
+    { action = "ProcessCreate", pattern = "rundll32" },
+]
+
+---
+
+# ---------- SquirrelWaffle ----------
+[[rule]]
+family = "BSD/Trojan-Downloader.Win32.SquirrelWaffle"
+severity = 83
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "http" },
+    { action = "FileWrite", path_endswith = ".xlsm|.doc|.vbs|.js|.dll" },
+    { action = "ProcessCreate", pattern = "wscript|cscript|powershell|regsvr32" },
+]
+
+---
+
+# ---------- Latrodectus ----------
+[[rule]]
+family = "BSD/Trojan-Downloader.Win32.Latrodectus"
+severity = 84
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "http" },
+    { action = "FileWrite", path_endswith = ".dll|.msi" },
+    { action = "ProcessCreate", pattern = "msiexec|rundll32" },
+]
+
+---
+
+# ---------- PureCrypter ----------
+[[rule]]
+family = "BSD/Trojan-Dropper.Win32.PureCrypter"
+severity = 85
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_contains = "appdata|temp", path_endswith = ".dll|.exe" },
+    { action = "ProcessCreate", pattern = "rundll32|regsvr32" },
+    { action = "NetworkConnect", pattern = "http" },
+]
+
+---
+
+# ---------- Amadey ----------
+[[rule]]
+family = "BSD/Trojan-Downloader.Win32.Amadey"
+severity = 82
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = ".exe|.dll" },
+    { action = "RegSetValue", detail_contains = "defender" },
+    { action = "ProcessCreate", pattern = "regsvr32|rundll32" },
+]
+
+---
+
+# ---------- HTTP Dropper ----------
+[[rule]]
+family = "BSD/Trojan-Downloader.Win32.HttpDropper"
+severity = 85
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "http", path_endswith = ".exe" },
+    { action = "FileWrite", path_endswith = ".exe", path_contains = "temp|appdata|public|programdata" },
+    { action = "ProcessCreate", path_endswith = ".exe", path_contains = "temp|appdata|public|programdata" },
+]
+
+---
+
+# ---------- HTTP Dropper (Loose) ----------
+[[rule]]
+family = "BSD/Trojan-Downloader.Win32.HttpDropper.Loose"
+severity = 82
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "http" },
+    { action = "FileWrite", path_endswith = ".exe", path_contains = "temp|appdata|public|programdata" },
+    { action = "ProcessCreate", path_endswith = ".exe", path_contains = "temp|appdata|public|programdata" },
+]
+
+---
+
+# ---------- Obfuscated HTTP (IEX) ----------
+[[rule]]
+family = "BSD/Trojan-Downloader.Win32.ObfuscatedHttp"
+severity = 84
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "IEXExecute", pattern = "" },
+    { action = "NetworkConnect", pattern = "http" },
+    { action = "FileWrite", path_endswith = ".exe", path_contains = "temp|appdata|public|programdata" },
+    { action = "ProcessCreate", path_endswith = ".exe", path_contains = "temp|appdata|public|programdata" },
+]
+
+---
+
+# ---------- Obfuscated PS (IEX+Base64) ----------
+[[rule]]
+family = "BSD/Generic.ObfuscatedPS"
+severity = 82
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "IEXExecute", pattern = "" },
+    { action = "Base64Decode", pattern = "" },
+    { action = "ProcessCreate", pattern = "powershell" },
+]
+
+---
+
+# ---------- JS Dropper ----------
+[[rule]]
+family = "BSD/TrojanDownloader.JSDropper"
+severity = 85
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "http" },
+    { action = "FileWrite", path_endswith = ".js|.vbs|.ps1|.exe|.dll|.bat|.cmd|.scr|.tmp|.bin" },
+    { action = "ProcessCreate", pattern = "wscript|cscript|powershell|mshta|regsvr32|rundll32|cmd" },
+]
+
+---
+
+# ---------- JS InfoStealer ----------
+[[rule]]
+family = "BSD/TrojanSpy.JSInfoStealer"
+severity = 82
+mode = "behavior"
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "FileRead", path_contains = "login data|cookies|web data|wallet|autofill|logins.json|key4.db|leveldb" },
+    { action = "NetworkConnect", pattern = "http" },
+    { action = "RegSetValue", path_contains = "chrome|firefox|edge|password|credential" },
+]
+
+---
+
+# ---------- JS Ransomware ----------
+[[rule]]
+family = "BSD/Ransomware.JSRansom"
+severity = 90
+mode = "behavior"
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".js|.vbs|.ps1|.exe|.dll|.bat|.cmd|.scr|.tmp|.bin" },
+    { action = "FileDelete", pattern = "" },
+    { action = "RegSetValue", detail_contains = "defender" },
+]
+
+---
+
+# ---------- JS Generic Backdoor ----------
+[[rule]]
+family = "BSD/Backdoor.Script.JS.Generic"
+severity = 82
+mode = "behavior"
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "http" },
+    { action = "ProcessCreate", pattern = "wscript|cscript|powershell|mshta|regsvr32|rundll32|cmd" },
+    { action = "RegSetValue", path_contains = "\run" },
+]
+
+---
+
+# ---------- JS Generic Obfuscated ----------
+[[rule]]
+family = "BSD/Trojan-Obfuscated.Script.JS.Generic"
+severity = 78
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "IEXExecute", pattern = "" },
+    { action = "Base64Decode", pattern = "" },
+    { action = "ProcessCreate", pattern = "wscript|cscript|powershell|mshta|regsvr32|rundll32|cmd" },
+]
+
+---
+
+# ---------- SunBurst ----------
+[[rule]]
+family = "BSD/Backdoor.Win32.SunBurst"
+severity = 90
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "FileRead", path_contains = "solarwinds" },
+    { action = "NetworkConnect", pattern = "avsvmcloud" },
+    { action = "ProcessHollowing", pattern = "" },
+]
+
+---
+
+# ---------- LemonDuck ----------
+[[rule]]
+family = "BSD/Miner.LemonDuck"
+severity = 85
+mode = "behavior"
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = ":445|:135" },
+    { action = "SchtasksCreate", pattern = "" },
+    { action = "ProcessCreate", pattern = "xmrig|miner" },
+]
+
+---
+
+# ---------- LockBit（勒索旗舰，按行为匹配） ----------
+# 加密扩展名 + vssadmin 卷影破坏 + 服务关闭 + 勒索信为并列组合信号（加密与删卷影交错进行，无固定顺序）。
+[[rule]]
+family = "BSD/Trojan-Ransom.Win32.LockBit"
+severity = 95
+mode = "behavior"
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".lockbit|.abcd" },
+    { action = "ProcessCreate", detail_contains = "vssadmin delete shadows" },
+    { action = "ServiceStop", pattern = "" },
+    { action = "FileWrite", path_contains = "readme|restore" },
+]
+
+---
+
+# ============================================================
+# Part 4 — 家族签名规则（单步/两步，家族独有指标）
+# ============================================================
+
+# ------------------------------------------------------------
+# 4.1 勒索家族扩展名指纹（单步直接命中）
+#     加密扩展名 = 家族确凿指纹，无需链；勒索信文件名由 Generic.RansomwareEncryptor 兜底。
+# ------------------------------------------------------------
+
+# ---------- Akira（.akira / .powerranges，Conti 后继，ChaCha20） ----------
+[[rule]]
+family = "BSD/Ransomware.Akira"
+severity = 94
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".akira|.powerranges" },
+]
+
+---
+
+# ---------- BlackBasta（.basta，*-README.txt / HOW_TO_DECRYPT.txt） ----------
+[[rule]]
+family = "BSD/Ransomware.BlackBasta"
+severity = 95
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".basta" },
+]
+
+---
+
+# ---------- BlackCat / ALPHV（.blackcat，.onion 泄漏站） ----------
+[[rule]]
+family = "BSD/Ransomware.BlackCat"
+severity = 94
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".blackcat" },
+]
+
+---
+
+# ---------- Hive（.hive） ----------
+[[rule]]
+family = "BSD/Ransomware.Hive"
+severity = 93
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".hive" },
+]
+
+---
+
+# ---------- DarkSide（.darkside） ----------
+[[rule]]
+family = "BSD/Ransomware.DarkSide"
+severity = 94
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".darkside" },
+]
+
+---
+
+# ---------- Clop（.clop） ----------
+[[rule]]
+family = "BSD/Ransomware.Clop"
+severity = 93
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".clop" },
+]
+
+---
+
+# ---------- Ryuk（.ryuk，关闭系统还原） ----------
+[[rule]]
+family = "BSD/Ransomware.Ryuk"
+severity = 95
+mode = "behavior"
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".ryuk" },
+    { action = "SystemConfig", detail_contains = "recoveryenabled" },
+]
+
+---
+
+# ---------- BlackMatter（.blackmatter） ----------
+[[rule]]
+family = "BSD/Ransomware.BlackMatter"
+severity = 95
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".blackmatter" },
+]
+
+---
+
+# ---------- Pysa（.pysa） ----------
+[[rule]]
+family = "BSD/Ransomware.Pysa"
+severity = 94
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".pysa" },
+]
+
+---
+
+# ---------- Maze（.maze） ----------
+[[rule]]
+family = "BSD/Ransomware.Maze"
+severity = 95
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".maze" },
+]
+
+---
+
+# ---------- Egregor（.egregor，Maze 后继，recover-files 提示） ----------
+[[rule]]
+family = "BSD/Ransomware.Egregor"
+severity = 94
+mode = "behavior"
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".egregor" },
+    { action = "FileWrite", path_contains = "recover-files" },
+]
+
+---
+
+# ---------- Royal（.royal，双重重吓，关闭系统还原） ----------
+[[rule]]
+family = "BSD/Ransomware.Royal"
+severity = 95
+mode = "behavior"
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".royal" },
+    { action = "SystemConfig", detail_contains = "recoveryenabled|disable" },
+]
+
+---
+
+# ---------- AvosLocker（.avos / .avos2） ----------
+[[rule]]
+family = "BSD/Ransomware.AvosLocker"
+severity = 94
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".avos|.avos2" },
+]
+
+---
+
+# ---------- RansomEXX（.exx / .rex） ----------
+[[rule]]
+family = "BSD/Ransomware.RansomEXX"
+severity = 94
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".exx|.rex" },
+]
+
+---
+
+# ---------- Play（.play / .pld） ----------
+[[rule]]
+family = "BSD/Ransomware.Play"
+severity = 94
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".play|.pld" },
+]
+
+---
+
+# ---------- Cuba（.cuba / .crypted） ----------
+[[rule]]
+family = "BSD/Ransomware.Cuba"
+severity = 94
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".cuba|.crypted" },
+]
+
+---
+
+# ---------- Vice Society（.vice / .locked） ----------
+[[rule]]
+family = "BSD/Ransomware.ViceSociety"
+severity = 93
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".vice|.locked" },
+]
+
+---
+
+# ---------- Conti（.conti） ----------
+[[rule]]
+family = "BSD/Ransomware.Conti"
+severity = 95
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".conti" },
+]
+
+---
+
+# ---------- REvil / Sodinokibi（.revil / .sodin） ----------
+[[rule]]
+family = "BSD/Ransomware.REvil"
+severity = 94
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_endswith = ".revil|.sodin" },
+]
+
+---
+
+# ------------------------------------------------------------
+# 4.2 窃密/键盘记录家族签名（凭据收集 → 独有外传信道 / 内存标记）
+# ------------------------------------------------------------
+
+# ---------- AgentTesla（SetWindowsHookEx 键盘记录 + SMTP(:587)/FTP 外传，Tor 匿名） ----------
+[[rule]]
+family = "BSD/Trojan-Spy.Win32.AgentTesla"
+severity = 90
+mode = "behavior"
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "MemoryAlloc", detail_contains = "getasynckeystate|keylog|hook" },
+    { action = "NetworkConnect", pattern = "smtp|:587|ftp|:21" },
+]
+
+---
+
+# ---------- LokiBot（SMTP 外传窃密） ----------
+[[rule]]
+family = "BSD/Trojan-PSW.Win32.LokiBot"
+severity = 86
+mode = "behavior"
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "FileRead", path_contains = "login data|cookies|web data" },
+    { action = "NetworkConnect", pattern = ":25|:587|smtp" },
+]
+
+---
+
+# ---------- HawkEye（键盘/剪贴板记录 + SMTP 外传） ----------
+[[rule]]
+family = "BSD/TrojanSpy.HawkEye"
+severity = 85
+mode = "behavior"
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "MemoryAlloc", detail_contains = "keylog|clipboard|hook" },
+    { action = "NetworkConnect", pattern = ":25|:587|smtp" },
+]
+
+---
+
+# ---------- RedLine（wmic 收集系统信息 + 面板外传；镂空进 regsvcs.exe） ----------
+[[rule]]
+family = "BSD/Trojan-Spy.Win32.RedLine"
+severity = 86
+mode = "behavior"
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "ProcessCreate", pattern = "wmic" },
+    { action = "NetworkConnect", pattern = "api/send|post|panel" },
+]
+
+---
+
+# ---------- LummaStealer（覆盖 80+ 浏览器/70+ 钱包，C2 伪装 .png/.gif 外传） ----------
+[[rule]]
+family = "BSD/TrojanSpy.LummaStealer"
+severity = 86
+mode = "behavior"
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "FileRead", path_contains = "login data|cookies|web data|wallet" },
+    { action = "NetworkConnect", path_endswith = ".png|.gif" },
+]
+
+---
+
+# ---------- Telegram 外传组（RisePro / MeduzaStealer / MetaStealer / FickerStealer） ----------
+[[rule]]
+family = "BSD/Trojan-PSW.Win32.TelegramStealer"
+severity = 85
+mode = "behavior"
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "FileRead", path_contains = "login data|logins.json|cookies|leveldb|wallet" },
+    { action = "NetworkConnect", pattern = "api.telegram.org|telegram" },
+]
+
+---
+
+# ---------- Raccoon v2（会话 Cookie 绕过 MFA + FTP 外传） ----------
+[[rule]]
+family = "BSD/Trojan-PSW.Win32.RaccoonStealer"
+severity = 87
+mode = "behavior"
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "FileRead", path_contains = "cookies|login data|wallet" },
+    { action = "NetworkConnect", pattern = "ftp|:21" },
+]
+
+---
+
+# ---------- Vidar（Steam/Telegram/GitHub 等公开平台 dead-drop 拉取配置） ----------
+[[rule]]
+family = "BSD/TrojanSpy.Vidar"
+severity = 88
+mode = "behavior"
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "FileRead", path_contains = "login data|cookies|wallet" },
+    { action = "NetworkConnect", pattern = "steam|telegram|github|.php" },
+]
+
+---
+
+# ---------- Stealc（模块化构建，浏览器凭据/钱包） ----------
+[[rule]]
+family = "BSD/Trojan-PSW.Win32.Stealc"
+severity = 85
+mode = "behavior"
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "FileRead", path_contains = "login data|cookies.sqlite|key4.db" },
+    { action = "NetworkConnect", pattern = ":443|:80" },
+]
+
+---
+
+# ---------- MysticStealer（浏览器凭据/钱包.dat） ----------
+[[rule]]
+family = "BSD/Trojan-PSW.Win32.MysticStealer"
+severity = 84
+mode = "behavior"
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "FileRead", path_contains = "login data|wallet.dat|cookies" },
+    { action = "NetworkConnect", pattern = ".php|panel" },
+]
+
+---
+
+# ---------- Rhadamanthys（AI OCR 识别钱包助记词 + 浏览器凭据） ----------
+[[rule]]
+family = "BSD/Trojan-PSW.Win32.Rhadamanthys"
+severity = 88
+mode = "behavior"
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "FileRead", path_contains = "login data|cookies|web data|wallet" },
+    { action = "FileWrite", path_endswith = ".zip|.bin" },
+    { action = "NetworkConnect", pattern = ".php|:443|api" },
+]
+
+---
+
+# ---------- SilverFox（窃密 C2，浏览器/钱包 + ZIP 打包外传） ----------
+[[rule]]
+family = "BSD/Trojan-Spy.Win32.SilverFox"
+severity = 83
+mode = "behavior"
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "FileRead", path_contains = "browser|wallet|login data|cookies" },
+    { action = "FileWrite", path_endswith = ".zip" },
+    { action = "NetworkConnect", pattern = "silverfox" },
+]
+
+---
+
+# ------------------------------------------------------------
+# 4.3 RAT / 远控家族 C2 签名（C2 特征串即家族确凿指纹，单步直接命中）
+# ------------------------------------------------------------
+
+# ---------- NjRAT ----------
+[[rule]]
+family = "BSD/Backdoor.Win32.NjRAT"
+severity = 85
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "njrat" },
+]
+
+---
+
+# ---------- NanoCore ----------
+[[rule]]
+family = "BSD/Backdoor.Win32.NanoCore"
+severity = 84
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "nanocore" },
+]
+
+---
+
+# ---------- DarkComet ----------
+[[rule]]
+family = "BSD/Backdoor.Win32.DarkComet"
+severity = 84
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "darkcomet" },
+]
+
+---
+
+# ---------- QuasarRAT ----------
+[[rule]]
+family = "BSD/Backdoor.Win32.QuasarRAT"
+severity = 83
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "quasar" },
+]
+
+---
+
+# ---------- PoisonIvy ----------
+[[rule]]
+family = "BSD/Backdoor.Win32.PoisonIvy"
+severity = 84
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "poisonivy" },
+]
+
+---
+
+# ---------- PlugX ----------
+[[rule]]
+family = "BSD/Backdoor.Win32.PlugX"
+severity = 84
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "plugx" },
+]
+
+---
+
+# ---------- ShadowPad ----------
+[[rule]]
+family = "BSD/Backdoor.Win32.ShadowPad"
+severity = 84
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "shadowpad" },
+]
+
+---
+
+# ---------- DCRat ----------
+[[rule]]
+family = "BSD/Backdoor.Win32.DCRat"
+severity = 84
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "dcrat|:88" },
+]
+
+---
+
+# ---------- Gh0stRAT（银狐技术母体之一） ----------
+[[rule]]
+family = "BSD/Backdoor.Win32.Gh0stRAT"
+severity = 84
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "gh0st" },
+]
+
+---
+
+# ---------- XenoRAT ----------
+[[rule]]
+family = "BSD/Backdoor.Win32.XenoRAT"
+severity = 83
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = ":6606|xeno" },
+]
+
+---
+
+# ---------- VenomRAT ----------
+[[rule]]
+family = "BSD/Backdoor.Win32.VenomRAT"
+severity = 83
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "venom" },
+]
+
+---
+
+# ---------- OrcusRAT ----------
+[[rule]]
+family = "BSD/Backdoor.Win32.OrcusRAT"
+severity = 83
+min_match = 1
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "orcus" },
+]
+
+---
+
+# ---------- WarzoneRAT ----------
+[[rule]]
+family = "BSD/Backdoor.Win32.WarzoneRAT"
+severity = 84
+mode = "behavior"
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "MemoryAlloc", detail_contains = "keylog|hook" },
+    { action = "NetworkConnect", pattern = "warzone" },
+]
+
+---
+
+# ---------- XWorm（回收站驻留 + Telegram 指令通道） ----------
+[[rule]]
+family = "BSD/Backdoor.Win32.XWorm"
+severity = 84
+mode = "behavior"
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_contains = "$recycle.bin" },
+    { action = "NetworkConnect", pattern = "api.telegram.org" },
+]
+
+---
+
+# ---------- Meterpreter ----------
+[[rule]]
+family = "BSD/PostExploit.Win32.Meterpreter"
+severity = 88
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = ":4444|:443" },
+    { action = "MemoryAlloc", detail_contains = "inject|shellcode|virtualalloc" },
+    { action = "ProcessCreate", pattern = "cmd.exe|powershell" },
+]
+
+---
+
+# ---------- SysJoker ----------
+[[rule]]
+family = "BSD/Backdoor.Win32.SysJoker"
+severity = 84
+mode = "behavior"
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_contains = "appdata|programdata", path_endswith = ".dll|.json" },
+    { action = "RegSetValue", path_contains = "\run" },
+    { action = "NetworkConnect", pattern = "amazonaws|pastebin|http" },
+]
+
+---
+
+# ============================================================
+# Part 5 — 银狐（SilverFox）脚本行为链
+# 参考 2025-2026 最新银狐攻击流程（火绒/瑞星/安天等报告）：
+#   投递（伪 WPS/Chrome/播放器安装包、.scr、群文件）
+#   → VBS/JS 拉起编码 PowerShell
+#   → 无文件下载器从云盘/Telegram/HTTP 拉载荷
+#   → 释放 DLL 白加黑侧载（rundll32/regsvr32）
+#   → BYOVD(合法签名驱动)+taskkill/sc 终止安全软件；Defender 排除 C:~F:
+#   → 伪装系统更新的计划任务（SYSTEM 每分钟）/ WMI 事件订阅持久化
+#   → 窃取浏览器凭据/键盘记录/微信钉钉聊天 → 打包 ZIP 经 Telegram/HTTP/云盘外传
+#   → DoH(223.5.5.5/8.8.8.8)或硬编码 IP(如 8.218.106.149:7000) C2 获取指令
+# 每条规则为“有序行为链”，需按顺序命中 min_match 步才判定，降低误杀。
+# ============================================================
+
+# ---------- 银狐 1：VBS/JS 拉起编码 PowerShell 执行 ----------
+[[rule]]
+family = "BSD/Trojan-Dropper.Script.SilverFox.EncodedPS"
+severity = 88
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "ProcessCreate", pattern = "powershell" },
+    { action = "Base64Decode", pattern = "iex|.net" },
+    { action = "IEXExecute", pattern = "" },
+]
+
+---
+
+# ---------- 银狐 2：无文件下载器（下载→落地→执行） ----------
+# 载荷常来自阿里云 OSS / Telegram / GitHub raw，落地到临时目录后用 LOLBin 执行。
+[[rule]]
+family = "BSD/Trojan-Downloader.Script.SilverFox.FilelessDropper"
+severity = 86
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "http|aliyuncs|oss|telegram|raw.githubusercontent" },
+    { action = "FileWrite", path_contains = "\temp|\appdata|\programdata|public", path_endswith = ".exe|.dll|.bin|.dat|.ps1|.vbs" },
+    { action = "ProcessCreate", pattern = "powershell|rundll32|regsvr32|mshta|wscript|cmd" },
+]
+
+---
+
+# ---------- 银狐 3：释放 DLL 白加黑侧载 ----------
+# 合法 EXE(白) + 同名恶意 DLL(黑) 落地后由 rundll32/regsvr32 加载。
+[[rule]]
+family = "BSD/Trojan-Dropper.Script.SilverFox.DllSideload"
+severity = 85
+min_match = 2
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_contains = "temp|appdata|programdata|public", path_endswith = ".dll" },
+    { action = "ProcessCreate", pattern = "rundll32|regsvr32" },
+]
+
+---
+
+# ---------- 银狐 4：防御规避（Defender 排除 + 终止安全软件 + BYOVD） ----------
+# PowerShell 将 C:~F: 加入 Defender 排除列表；taskkill/sc 或 BYOVD 终止安全软件进程。
+[[rule]]
+family = "BSD/Evasion.Script.SilverFox.DisableAV"
+severity = 90
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "RegSetValue", pattern = "defender" },
+    { action = "ProcessCreate", pattern = "taskkill" },
+    { action = "ServiceStop", pattern = "" },
+]
+
+---
+
+# ---------- 银狐 5：落地脚本 + 隐藏计划任务持久化（伪装系统更新） ----------
+# 计划任务伪装为 Edge/系统更新，SYSTEM 权限周期触发。
+[[rule]]
+family = "BSD/Persistence.Script.SilverFox.ScheduledTask"
+severity = 86
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "FileWrite", path_contains = "temp|appdata", path_endswith = ".bat|.cmd|.vbs|.ps1|.dll" },
+    { action = "SchtasksCreate", detail_contains = "/tn|/tr|/sc|register-scheduledtask" },
+    { action = "ProcessCreate", pattern = "powershell|rundll32|mshta|wscript|regsvr32|cmd" },
+]
+
+---
+
+# ---------- 银狐 6：WMI 远程执行 / 事件订阅持久化 ----------
+[[rule]]
+family = "BSD/Persistence.Script.SilverFox.WMIExec"
+severity = 86
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "WMIRemoteExec", pattern = "" },
+    { action = "ProcessCreate", pattern = "powershell|cmd|wscript|cscript" },
+    { action = "NetworkConnect", pattern = "http|:445|:135" },
+]
+
+---
+
+# ---------- 银狐 7：窃取浏览器凭据并打包 ----------
+# 读取浏览器 Login Data/Cookies/钱包，读取注册表凭据，打包 ZIP。
+[[rule]]
+family = "BSD/Trojan-Spy.Script.SilverFox.BrowserStealer"
+severity = 88
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "FileRead", path_contains = "login data|cookies|web data|key4.db|logins.json|autofill" },
+    { action = "RegRead", path_contains = "credential|password|login" },
+    { action = "FileWrite", path_endswith = ".zip|.7z|.rar" },
+]
+
+---
+
+# ---------- 银狐 8：打包窃取数据并经 Telegram/HTTP 外传 ----------
+# 收紧：第一步限定读取的是敏感数据文件，避免任意 FileRead 误触发。
+[[rule]]
+family = "BSD/Trojan-Spy.Script.SilverFox.Exfil"
+severity = 88
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "FileRead", path_contains = "login data|cookies|wallet|browser|document|desktop|downloads|chat|wechat|weixin|dingtalk" },
+    { action = "FileWrite", path_endswith = ".zip|.7z|.rar" },
+    { action = "NetworkConnect", pattern = "api.telegram.org|telegram|/send|http|ftp|:443" },
+]
+
+---
+
+# ---------- 银狐 9：键盘记录 + 反射加载（远控能力） ----------
+# 键盘/剪贴板记录 + 反射式 DLL 加载 + 回连 C2。
+[[rule]]
+family = "BSD/Backdoor.Script.SilverFox.KeylogReflective"
+severity = 87
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "MemoryAlloc", detail_contains = "getasynckeystate|keylog|hook|clipboard" },
+    { action = "ReflectionLoad", pattern = "" },
+    { action = "NetworkConnect", pattern = "http|:443|:7000" },
+]
+
+---
+
+# ---------- 银狐 10：C2 通信（DoH/云端/硬编码 IP）获取指令并执行 ----------
+# 硬编码 C2(如 8.218.106.149:7000) 或 DoH(223.5.5.5/8.8.8.8) 拉取编码指令后 IEX 执行。
+[[rule]]
+family = "BSD/Backdoor.Script.SilverFox.C2"
+severity = 88
+min_match = 3
+max_interval = 30
+steps = [
+    { action = "NetworkConnect", pattern = "http|:443|:7000|aliyuncs|oss|223.5.5.5|8.8.8.8" },
+    { action = "Base64Decode", pattern = "" },
+    { action = "IEXExecute", pattern = "" },
+]

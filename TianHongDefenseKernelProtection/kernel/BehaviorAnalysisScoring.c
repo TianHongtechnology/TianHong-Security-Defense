@@ -5,6 +5,7 @@
 #include "BehaviorAnalysisRules.h"
 #include "BehaviorDynamicRules.h"
 #include "BehaviorIndicatorDefs.h"
+#include "ci_verify.h"             /* CiIsPidSigned 签名可信审查 */
 
 /* 外部全局变量声明 */
 extern BA_RULE_STATS g_baRuleStats[];
@@ -193,6 +194,20 @@ VOID BehaviorScoreProcess(INT64 pid, BA_THREAT_RESULT* result)
             DOUBLE baseScore = BehaviorGetIndicatorBaseScore((BA_INDICATOR)i);
             combined[i] = baseScore * (cnt > 2 ? 2.0 : (DOUBLE)cnt);
             distinctCnt++;
+        }
+    }
+
+    /* 信任链加权：对带可信签名的进程（如微软/Windows 组件）降低指标强度，
+     * 减少可信软件的误报。msiexec.exe 等被强制不可信的进程（CiIsPidSigned=FALSE）
+     * 不享受加成，其恶意 MSI 释放/修改行为保持完整检测权重。 */
+    {
+        DOUBLE trustBonus = BehaviorGetTrustBonus(pid, result->processPath);
+        if (trustBonus > 0.0) {
+            BehaviorLogDebug("Process %s (PID=%lld) trust bonus=%.2f, indicators scaled by %.0f%%",
+                result->processPath, pid, trustBonus, (1.0 - trustBonus) * 100.0);
+            for (i = 0; i < BA_MAX_INDICATORS; i++) {
+                if (combined[i] > 0.0) combined[i] *= (1.0 - trustBonus);
+            }
         }
     }
 
@@ -576,31 +591,33 @@ static VOID BehaviorApplyReputationWeighting(
     }
 }
 
-/* ── BehaviorGetTrustBonus: 信任链加权 ── */
-static DOUBLE BehaviorGetTrustBonus(const CHAR* imagePath)
+/* ── BehaviorGetTrustBonus: 信任链加权（实际生效版）──
+ * 基于签名可信审查（CiIsPidSigned）决定是否给予信任加成：
+ * - 仅当进程主镜像带有可信签名（AUTHENTICODE 及以上）时才加分；
+ * - msiexec.exe 等被强制视为不可信的进程（见 CiRecordProcessSignature /
+ *   BaIsProcessSigned 中的可信审查覆盖），即使带微软签名也不加分，
+ *   使其恶意 MSI 释放/修改行为不被信任加权掩盖；
+ * - 微软/Windows 组件签名进程加成更高，一般可信签名进程加成较低。
+ * 返回值作为评分衰减系数：score *= (1.0 - bonus)。
+ * 在 PASSIVE_LEVEL 与 DISPATCH_LEVEL 均可调用（内部仅做缓存查询与字符串比较）。 */
+DOUBLE BehaviorGetTrustBonus(INT64 pid, const CHAR* imagePath)
 {
-    if (imagePath == NULL)
+    if (pid <= 0)
         return 0.0;
 
-    // 1. 查可信发布者表
-    for (ULONG i = 0; i < BA_MAX_TRUSTED_PRODUCTORS; i++) {
-        // 简化：使用简单字符串匹配
-        if (strstr(imagePath, "Microsoft") != NULL ||
-            strstr(imagePath, "Windows") != NULL) {
-            return 0.3; // 知名厂商加分
-        }
+    /* 签名可信审查：未签名或已被强制不可信的进程不加分 */
+    if (!CiIsPidSigned(pid))
+        return 0.0;
+
+    /* 微软/Windows 签名进程：更高信任加成 */
+    if (imagePath != NULL &&
+        (strstr(imagePath, "Microsoft") != NULL ||
+         strstr(imagePath, "Windows") != NULL)) {
+        return 0.35;
     }
 
-    // 2. 查签名发布者跟踪表（历史统计）
-    for (ULONG i = 0; i < BA_MAX_SIGNED_PRODUCTORS; i++) {
-        if (g_baSignedProducers[i].SeenCount > 10) {
-            if (strstr(imagePath, g_baSignedProducers[i].Publisher) != NULL) {
-                return 0.15; // 历史可信发布者加分
-            }
-        }
-    }
-
-    return 0.0;
+    /* 其他带有效签名的可信进程：基础加成 */
+    return 0.20;
 }
 
 /* ── BehaviorMatchDynamicRules: 匹配所有动态规则 ── */

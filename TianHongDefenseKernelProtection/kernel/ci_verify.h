@@ -88,3 +88,16 @@ VOID CiRecordProcessSignature(INT64 pid, BOOLEAN isSigned);
  *   FALSE — 不可信或未缓存
  * ============================================================================ */
 BOOLEAN CiIsPidSigned(INT64 pid);
+
+/* ============================================================================
+ * BaMarkPidUnsignedDueToSideLoad — 标记进程为"未签名"当检测到同目录未签名 DLL
+ *
+ * 当签名进程加载了与其 EXE 同目录的未签名 DLL 时，视为整个进程已降级为不可信。
+ * 后续 CiIsPidSigned 将返回 FALSE，所有依赖签名状态的检测逻辑（注入防护、
+ * DLL 扫描等）将对该进程采用严格模式。
+ *
+ * 参数：
+ *   pid      — 进程 ID
+ *   dllPath  — 同目录未签名 DLL 的完整路径（用于日志和后续检查）
+ * ============================================================================ */
+VOID BaMarkPidUnsignedDueToSideLoad(INT64 pid, const CHAR* dllPath);

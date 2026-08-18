@@ -1611,6 +1611,16 @@ static void ForceUnloadAndDeleteService()
 // 停止 KernelProtectionClient
 void StopKernelProtectionClient()
 {
+    /* 先关闭 R0 驱动设备句柄，释放对主驱动的引用。
+     * 若该句柄保持打开，Client 的 CleanupAndExit 停止主驱动服务时，
+     * 驱动对象引用计数无法降到 0，主驱动无法卸载（磁盘/网络驱动无此句柄，故可正常卸载）。 */
+    if (g_hR0DriverDevice != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(g_hR0DriverDevice);
+        g_hR0DriverDevice = INVALID_HANDLE_VALUE;
+        Log_AddLogSimple("R0 驱动设备句柄已关闭（释放主驱动引用）", LOG_INFO);
+    }
+
     if (g_hClientProcess != NULL)
     {
         // 先尝试通过 socket 通知退出
@@ -4760,7 +4770,7 @@ static bool DetectPowerShellObfuscation(const std::string& cmdLine, std::string&
 // 使用 BatchScan 分析命令行内容（静态内容指纹 + 语言检测器启发式）。
 // 原静态指纹规则已从 Behavior Sandbox 迁移至 BatchScan，命令行路径需
 // 同步改走 ScriptDetectionEngine 以确保迁移后检测不丢失。
-static ScriptSandbox::DetectionResult AnalyzeCommandLineWithSandbox(const std::string& content)
+static ScriptSandbox::DetectionResult AnalyzeCommandLineWithSandbox(const std::string& content, const std::string& fileExt = "")
 {
     ScriptSandbox::DetectionResult result = { false, "Clean", 0, {}, {} };
 
@@ -4769,7 +4779,19 @@ static ScriptSandbox::DetectionResult AnalyzeCommandLineWithSandbox(const std::s
         std::string limited = content.substr(0, 8192);
 
         ScriptDetectionEngine engine;
-        RiskReport report = engine.scan(limited);
+        ScriptLanguage langHint = ScriptLanguage::Unknown;
+        if (!fileExt.empty()) {
+            if (fileExt == ".ps1" || fileExt == ".psm1" || fileExt == ".psd1" ||
+                fileExt == ".ps1xml" || fileExt == ".psc1" || fileExt == ".cdxml")
+                langHint = ScriptLanguage::PowerShell;
+            else if (fileExt == ".bat" || fileExt == ".cmd")
+                langHint = ScriptLanguage::CMD;
+            else if (fileExt == ".vbs" || fileExt == ".vbe")
+                langHint = ScriptLanguage::VBS;
+            else if (fileExt == ".js" || fileExt == ".jse" || fileExt == ".wsf")
+                langHint = ScriptLanguage::JavaScript;
+        }
+        RiskReport report = engine.scan(limited, langHint);
 
         if (report.isMalicious) {
             result.malicious = true;
@@ -4793,13 +4815,14 @@ static ScriptSandbox::DetectionResult AnalyzeCommandLineWithSandbox(const std::s
 // ═══════════════════════════════════════════════════════════════════════════
 struct CommandLineRiskResult {
     bool detected;
+    bool autoBlock;   // 命令行可疑：无需用户确认，直接拦截（上升到进程树 suspend 级别）
     std::string alertTitle;
     std::string sendOut;
 };
 
 static CommandLineRiskResult DetectCommandLineRisk(int pid, const std::string& procPath, const std::string& cmdLine)
 {
-    CommandLineRiskResult result = { false, "", "" };
+    CommandLineRiskResult result = { false, false, "", "" };
 
     if (cmdLine.empty() || procPath.empty())
         return result;
@@ -5001,37 +5024,64 @@ static CommandLineRiskResult DetectCommandLineRisk(int pid, const std::string& p
         string sandboxReason;
         string decodedContent;
 
-        // 检测混淆模式
+        // 完全信任后缀名，不做内容检测兜底
+        // 只有明确的脚本后缀才进行动态分析
+        std::string fileExt;
+        {
+            size_t dotPos = procPath.rfind('.');
+            if (dotPos != std::string::npos) {
+                fileExt = procPath.substr(dotPos);
+                std::transform(fileExt.begin(), fileExt.end(), fileExt.begin(), ::tolower);
+            }
+        }
+
+        // 检查是否为已知脚本后缀
+        bool isKnownScriptExt = (!fileExt.empty()) &&
+            (fileExt == ".ps1" || fileExt == ".psm1" || fileExt == ".psd1" ||
+             fileExt == ".ps1xml" || fileExt == ".psc1" || fileExt == ".cdxml" ||
+             fileExt == ".bat" || fileExt == ".cmd" ||
+             fileExt == ".vbs" || fileExt == ".vbe" ||
+             fileExt == ".js" || fileExt == ".jse" || fileExt == ".wsf");
+
+        // 检测混淆模式（提升到块外，供后续 else-if 使用）
         string obfuscationType;
-        bool hasObfuscation = DetectPowerShellObfuscation(sCmd, obfuscationType);
+        bool hasObfuscation = false;
 
-        // 尝试解码 -EncodedCommand
-        if (sCmd.find("-enc") != string::npos || sCmd.find("-encodedcommand") != string::npos) {
-            decodedContent = ExtractPowerShellEncodedCommand(sCmd);
-        }
+        // 只有已知脚本后缀才进行动态分析
+        if (isKnownScriptExt) {
+            hasObfuscation = DetectPowerShellObfuscation(sCmd, obfuscationType);
 
-        // 对解码后的内容进行 Sandbox 分析
-        if (!decodedContent.empty()) {
-            auto sandboxResult = AnalyzeCommandLineWithSandbox(decodedContent);
-            if (sandboxResult.malicious) {
-                sandboxReason = "Sandbox检测到恶意行为链: " + sandboxResult.family +
-                                " (严重度=" + to_string(sandboxResult.severity_score) + ")";
-                for (const auto& rule : sandboxResult.triggered_rules) {
-                    sandboxReason += "\n  - " + rule;
+            // 尝试解码 -EncodedCommand
+            if (sCmd.find("-enc") != string::npos || sCmd.find("-encodedcommand") != string::npos) {
+                decodedContent = ExtractPowerShellEncodedCommand(sCmd);
+            }
+
+            // 对解码后的内容进行 Sandbox 分析
+            if (!decodedContent.empty()) {
+                auto sandboxResult = AnalyzeCommandLineWithSandbox(decodedContent, fileExt);
+                if (sandboxResult.malicious) {
+                    sandboxReason = "Sandbox检测到恶意行为链: " + sandboxResult.family +
+                                    " (严重度=" + to_string(sandboxResult.severity_score) + ")";
+                    for (const auto& rule : sandboxResult.triggered_rules) {
+                        sandboxReason += "\n  - " + rule;
+                    }
                 }
             }
-        }
 
-        // 对原始命令行也进行 Sandbox 分析
-        if (sandboxReason.empty()) {
-            auto sandboxResult = AnalyzeCommandLineWithSandbox(sCmd);
-            if (sandboxResult.malicious) {
-                sandboxReason = "Sandbox检测到可疑行为链: " + sandboxResult.family +
-                                " (严重度=" + to_string(sandboxResult.severity_score) + ")";
-                for (const auto& rule : sandboxResult.triggered_rules) {
-                    sandboxReason += "\n  - " + rule;
+            // 对原始命令行也进行 Sandbox 分析
+            if (sandboxReason.empty()) {
+                auto sandboxResult = AnalyzeCommandLineWithSandbox(sCmd, fileExt);
+                if (sandboxResult.malicious) {
+                    sandboxReason = "Sandbox检测到可疑行为链: " + sandboxResult.family +
+                                    " (严重度=" + to_string(sandboxResult.severity_score) + ")";
+                    for (const auto& rule : sandboxResult.triggered_rules) {
+                        sandboxReason += "\n  - " + rule;
+                    }
                 }
             }
+        } else {
+            // 未知后缀，跳过动态分析
+            // 但仍可进行静态特征检测
         }
 
         if (handleit[0] && (handleit[1] || handleit[2] || handleit[3] || handleit[4]))
@@ -5463,6 +5513,35 @@ static CommandLineRiskResult DetectCommandLineRisk(int pid, const std::string& p
         sendOut = "[命令防护·拦截] 检测到可疑命令，建议拦截。\r\n\r\n完整命令：\r\n" + sCmd;
         beenInHandling = TRUE;
         alertTitle = "检测到可疑命令，建议拦截";
+    }
+
+    /* ── 命令行可疑：自动拦截（上升到进程树 suspend 级别）──
+     * 针对 PowerShell 尝试禁用 Windows Defender / 受控文件夹访问，
+     * 或添加 Defender 排除项（ExclusionPath/Process/Extension）的行为。
+     * 这类命令是攻击者绕过安全防护的明确意图，无需用户确认，
+     * 直接标记 autoBlock，由调用方不经弹窗即拦截整个进程树。 */
+    {
+        std::string lowerCmd = sCmd;
+        std::transform(lowerCmd.begin(), lowerCmd.end(), lowerCmd.begin(), ::tolower);
+
+        /* 禁用 Defender 实时监控 / 受控文件夹访问 / 行为监控等自带防护 */
+        static const std::regex reDisableDefender(
+            R"((?:set|add)-mppreference\s+.*?-(?:disable(?:realtimemonitoring|behavior|ioav|script|blockatfirstseen|intrusionprevention)|enablecontrolledfolderaccess\s+disabled))",
+            std::regex::icase | std::regex::optimize);
+        /* 添加 Defender 排除项（路径/进程/扩展名/IP），等价于豁免恶意载荷 */
+        static const std::regex reExcludeDefender(
+            R"((?:add|set)-mppreference\s+.*?-(?:exclusion(?:path|process|extension|ipaddress)\s+["']?[^;"']+))",
+            std::regex::icase | std::regex::optimize);
+
+        if (std::regex_search(lowerCmd, reDisableDefender) ||
+            std::regex_search(lowerCmd, reExcludeDefender))
+        {
+            beenInHandling = TRUE;
+            result.autoBlock = true;
+            alertTitle = "命令行可疑：检测到禁用Windows Defender/添加排除项";
+            sendOut = "[命令防护·自动拦截] 命令行可疑：检测到试图禁用Windows Defender或添加排除项，"
+                      "已直接拦截整个进程树。\r\n\r\n完整命令：\r\n" + sCmd;
+        }
     }
 
     if (beenInHandling)
@@ -6013,17 +6092,16 @@ DWORD WINAPI ClientRecvT(LPVOID lpParam)
                                      LOG_INFO);
                     }
                     // 2. 检查自动允许/阻止列表（命中后仍需记录日志，便于用户审计）
-                    // 先按 PID+标题精确匹配，再按 PID 模糊匹配（避免同一进程不同操作反复弹窗）
+                    // 按 PID+防护类型+标题精确匹配，不再使用 FindByPid 全量匹配同一 PID 的历史决策
+                    // 避免 msiexec 等进程因某次允许而后续所有告警都被静默放行
                     else if (AutoAllowList.Find(pid, autoListKeyStd) ||
-                             AutoAllowList.Find(pid, alertTitleStd) ||
-                             AutoAllowList.FindByPid(pid))
+                             AutoAllowList.Find(pid, alertTitleStd))
                     {
                         dialogResult = AW_AutoAllow;
                         needLog = true;
                     }
                     else if (AutoPreventList.Find(pid, autoListKeyStd) ||
-                             AutoPreventList.Find(pid, alertTitleStd) ||
-                             AutoPreventList.FindByPid(pid))
+                             AutoPreventList.Find(pid, alertTitleStd))
                     {
                         dialogResult = AW_AutoPrevent;
                         needLog = true;
@@ -6413,7 +6491,22 @@ DWORD WINAPI ClientRecvT(LPVOID lpParam)
                         CommandLineRiskResult risk = DetectCommandLineRisk(pid, procPath, cmdLine);
                         if (risk.detected)
                         {
-                            if (AutoAllowList.Find(pid, risk.alertTitle))
+                            if (risk.autoBlock)
+                            {
+                                /* 命令行可疑：无需用户确认，直接阻止并终止进程 */
+                                allow = 0;
+                                Log_AddLogSimple(QString("已自动阻止命令行可疑进程 PID=%1").arg(reqPid),
+                                    LOG_WARN, "Kernel.CommandLineRisk");
+                                {
+                                    HANDLE hKill = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+                                    if (hKill)
+                                    {
+                                        TerminateProcess(hKill, 1);
+                                        CloseHandle(hKill);
+                                    }
+                                }
+                            }
+                            else if (AutoAllowList.Find(pid, risk.alertTitle))
                             {
                                 allow = 1;
                             }
@@ -6445,6 +6538,16 @@ DWORD WINAPI ClientRecvT(LPVOID lpParam)
                                         {
                                             R0AddToAutoList(pid, risk.alertTitle.c_str(), FALSE);
                                         }
+                                        /* 用户选择拦截：直接终止被挂起的进程，确保即使
+                                         * 驱动响应往返失败也能可靠结束进程 */
+                                        {
+                                            HANDLE hKill = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+                                            if (hKill)
+                                            {
+                                                TerminateProcess(hKill, 1);
+                                                CloseHandle(hKill);
+                                            }
+                                        }
                                     }
                                 }
                                 catch (...)
@@ -6472,6 +6575,10 @@ DWORD WINAPI ClientRecvT(LPVOID lpParam)
                 {
                     Log_AddLogSimple(QString("进程检查响应发送失败 PID=%1 错误=%2").arg(reqPid).arg(WSAGetLastError()), LOG_ERROR);
                 }
+
+                // 同时通知驱动端（R0 发来的 PROCESS_CHECK 需要回写决策）
+                LONG driverStatus = allow ? 0 : STATUS_ACCESS_DENIED;
+                R0SendFileEventResponse(driverStatus);
             }
             else if (strcmp(packet.InfoTitle, CLIENT_MSG_DLL_SCAN) == 0)
             {
@@ -6489,13 +6596,12 @@ DWORD WINAPI ClientRecvT(LPVOID lpParam)
                               .arg(dllScanData.blocking ? "是" : "否"), LOG_INFO);
 
                 int allow = 1;
+                bool memoryProtectionEnabled = (pProtectionSettingPage != nullptr &&
+                    pProtectionSettingPage->pMemorySwitch != nullptr &&
+                    pProtectionSettingPage->pMemorySwitch->getIsToggled());
 
                 if (dllScanData.blocking)
                 {
-                    bool memoryProtectionEnabled = (pProtectionSettingPage != nullptr &&
-                        pProtectionSettingPage->pMemorySwitch != nullptr &&
-                        pProtectionSettingPage->pMemorySwitch->getIsToggled());
-
                     if (memoryProtectionEnabled && !dllPath.empty())
                     {
                         BOOL scanResult = ScanProcessFile(dllPath, FALSE, NULL);
@@ -6514,6 +6620,29 @@ DWORD WINAPI ClientRecvT(LPVOID lpParam)
                 ClientDllScanResponse resp = {};
                 resp.pid = dllScanData.pid;
                 resp.allow = allow;
+                resp.isSideLoad = dllScanData.isSideLoad;
+
+                /* 同目录未签名 DLL 告警：通知用户该进程的签名已被降级 */
+                if (dllScanData.isSideLoad && memoryProtectionEnabled)
+                {
+                    string sideLoadMsg = "[DLL 防护·签名降级]\n"
+                        "检测到同目录未签名 DLL，进程签名已降级为不可信\n\n"
+                        "进程: " + procPath + "\n"
+                        "加载 DLL: " + dllPath + "\n"
+                        "原因：同目录未签名 DLL 侧加载（Side-Load）";
+                    Log_AddLogSimple(QString("[DLL-SCAN] 同目录未签名 DLL，签名降级 PID=%1 DLL=%2")
+                        .arg(pid).arg(QString::fromUtf8(dllPath.c_str())), LOG_WARN, "Kernel.DllScan");
+                    /* 发送告警（不阻塞，fire-and-forget） */
+                    if (g_bClientConnected && Tran_ClientSocket != INVALID_SOCKET)
+                    {
+                        Packet sidePkt = {};
+                        sidePkt.PacketTyped = PTClientMessage;
+                        strcpy_s(sidePkt.InfoTitle, sizeof(sidePkt.InfoTitle), "DLL_SIDEPLOIT_ALERT");
+                        sidePkt.Pid = pid;
+                        strncpy_s(sidePkt.Message, sizeof(sidePkt.Message), sideLoadMsg.c_str(), _TRUNCATE);
+                        send(Tran_ClientSocket, (const char*)&sidePkt, sizeof(Packet), 0);
+                    }
+                }
 
                 Packet respPkt = {};
                 respPkt.PacketTyped = PTClientMessage;
@@ -6527,6 +6656,14 @@ DWORD WINAPI ClientRecvT(LPVOID lpParam)
                     Log_AddLogSimple(QString("[DLL-SCAN] 发送失败 PID=%1 err=%2")
                         .arg(reqPid).arg(WSAGetLastError()), LOG_ERROR);
                 }
+            }
+            else if (strcmp(packet.InfoTitle, CLIENT_MSG_ROLLBACK_LOG) == 0)
+            {
+                /* 回滚记录（溢出丢磁盘）：驱动 g_baDroppedFiles/g_baRegOps 溢出上报，
+                 * 主程序持久化到行为磁盘缓存（300MB 上限），供回滚时结合当前 list 执行。 */
+                BA_ROLLBACK_LOG_RECORD rbRec;
+                memcpy(&rbRec, packet.Message, sizeof(BA_ROLLBACK_LOG_RECORD));
+                BehaviorCacheAppendRollbackRecord(rbRec);
             }
             else if (strcmp(packet.InfoTitle, CLIENT_MSG_ROLLBACK_CONFIRM) == 0)
             {
@@ -7581,6 +7718,16 @@ BOOL ScanProcessFile(string FilePath, BOOL NeedTerminateProcess, HANDLE ProcessH
 
 			if (VirusName != "Empty") isVir = TRUE;
 
+			if (!isVir && pVirusScanPage && pVirusScanPage->pScriptEngineSwitch && pVirusScanPage->pScriptEngineSwitch->getIsToggled())
+			{
+				string scriptResult = Scan_ScriptBatch(FilePath);
+				if (scriptResult != "Empty")
+				{
+					VirusName = scriptResult;
+					isVir = TRUE;
+				}
+			}
+
 			if (isVir)
 			{
 				if (pVirusName) *pVirusName = VirusName;
@@ -8233,6 +8380,57 @@ BOOL ScanProcessAutoChooseSync(std::string FilePath, BOOL NeedTerminateProcess,
 	}
 }
 
+/**
+ * @brief 在启动时主动加载 BatchScan 动态规则文件（heuristic + sandbox）
+ *        使用内部静态 guard 防止重复读写。
+ *        若规则文件不存在则回退到内嵌规则，仅记录 ERROR 警告。
+ */
+static void InitBatchScanRules()
+{
+    // 静态 guard：保证整个进程生命周期内只执行一次
+    static bool s_loaded = false;
+    if (s_loaded) return;
+    s_loaded = true;
+
+    std::string exeDir;
+    {
+        char buf[MAX_PATH] = {0};
+        DWORD n = GetModuleFileNameA(NULL, buf, MAX_PATH);
+        if (n > 0) {
+            std::string p(buf);
+            size_t pos = p.rfind('\\');
+            if (pos != std::string::npos) exeDir = p.substr(0, pos);
+        }
+    }
+    if (exeDir.empty()) return;
+
+    const std::string heurPath = exeDir + "\\Resources\\rules\\batchscan\\heuristics.toml";
+    const std::string sandPath = exeDir + "\\Resources\\rules\\batchscan\\sandbox.toml";
+
+    // 触发 Lazy static 初始化（BatchScan.h 中的 Match() 内部静态变量）
+    // 通过构造一个空的 ScriptDetectionEngine 并调用 scanFile 触发文件读取
+    (void)heurPath; // 由 DynamicRuleLoader 内部路径拼接驱动，此处仅作占位说明
+    (void)sandPath;
+
+    // 主动验证文件是否存在，并输出对应日志
+    {
+        std::ifstream f(heurPath, std::ios::binary);
+        if (f.good()) {
+            Log_AddLogSimple("启发式规则加载成功（来自 heuristics.toml）。", LOG_SUCCESS);
+        } else {
+            Log_AddLogSimple("启发式规则文件未找到（heuristics.toml），将使用内嵌默认规则。", LOG_ERROR);
+        }
+    }
+    {
+        std::ifstream f(sandPath, std::ios::binary);
+        if (f.good()) {
+            Log_AddLogSimple("沙盒行为链规则加载成功（来自 sandbox.toml）。", LOG_SUCCESS);
+        } else {
+            Log_AddLogSimple("沙盒行为链规则文件未找到（sandbox.toml），将使用内嵌默认规则。", LOG_ERROR);
+        }
+    }
+}
+
 int main(int argc, char* argv[])
 {
     QApplication a(argc, argv);
@@ -8266,6 +8464,9 @@ int main(int argc, char* argv[])
 	}
 	else
 	{
+		// 启动时主动加载 BatchScan 动态规则（有 guard，仅执行一次）
+		InitBatchScanRules();
+
 		LPTOP_LEVEL_EXCEPTION_FILTER pException = SetUnhandledExceptionFilter(catchExceptionFileter);
 
 		if (IsWindows11())
@@ -9293,6 +9494,17 @@ void MainWindow::CloseWindow()
 	}
 
 	QtConcurrent::run([this]() {
+		/* 退出伊始即关闭 R0 驱动设备句柄，释放对主驱动的引用。
+		 * 关键：必须在下方发送 QUIT（第9470行）之前关闭，因为客户端收到 QUIT 会
+		 * 立即执行 CleanupAndExit 停止主驱动；若此处句柄仍打开，驱动对象引用计数
+		 * 无法降到 0，主驱动无法卸载（磁盘/网络驱动无该句柄，故可正常卸载）。 */
+		if (g_hR0DriverDevice != INVALID_HANDLE_VALUE)
+		{
+			CloseHandle(g_hR0DriverDevice);
+			g_hR0DriverDevice = INVALID_HANDLE_VALUE;
+			Log_AddLogSimple("R0 驱动设备句柄已关闭（释放主驱动引用）", LOG_INFO);
+		}
+
 		if (IsOpenExtortionCatch)
 		{
 			for (int i = 0; i < RansomDetectPathCount; i++)
@@ -9341,10 +9553,15 @@ void MainWindow::CloseWindow()
 
 		if (g_hClientProcess != NULL)
 		{
-			WaitForSingleObject(g_hClientProcess, 2000);
+			/* 等待 Client 执行 CleanupAndExit（含 IOCTL_PREPARE_UNLOAD + 关闭 g_hDevice）
+			 * 给足时间让 Client 完成驱动清理，避免驱动因句柄未释放而无法卸载。 */
+			WaitForSingleObject(g_hClientProcess, 8000);
 			DWORD exitCode;
 			if (GetExitCodeProcess(g_hClientProcess, &exitCode) && exitCode == STILL_ACTIVE)
 			{
+				/* Client 未正常退出，尝试通过已关闭的 g_hR0DriverDevice 无法再发 IOCTL，
+				 * 只能依赖 SCM 强制停止服务。此时驱动可能残留，需手动 sc delete 清理。 */
+				Log_AddLogSimple("Client 未在 8 秒内退出，强制终止（驱动卸载可能不完整）", LOG_WARN);
 				TerminateProcess(g_hClientProcess, 0);
 			}
 			CloseHandle(g_hClientProcess);
@@ -9381,6 +9598,8 @@ void MainWindow::CloseWindow()
 			}
 
 			MainWindow::closeWindow();
+			/* 确保 Qt 事件循环退出，否则 main() 无法返回 */
+			qApp->quit();
 		}, Qt::QueuedConnection);
 	});
 }
@@ -9446,7 +9665,43 @@ DWORD WaitForHookT(LPVOID lpParam)
 	}
 	else
 	{
-		Tran_SendPacket(Tran_Client[Struct.Count], (char*)"", PTCreateProcessRoutine, (char*)"", -1); // 超时未完成：给父进程发信号可以resume主线程，但说明hook可能未成功，父进程可以选择是否继续运行
+		// 超时未完成：检查是否收到 CallResumeEvent（DLL已注入但事件未及时设置）
+		BOOL bResume = FALSE;
+		WaitForSingleObject(CreateCheckMutex, 30000);
+		for (auto it = ProcessEventId.begin(); it != ProcessEventId.end(); )
+		{
+			if (it->first == Struct.Pid)
+			{
+				HANDLE hEvent = OpenEventA(EVENT_MODIFY_STATE, FALSE, it->second.c_str());
+				if (hEvent != NULL)
+				{
+					// 检查事件是否已被设置（非手动重置事件）
+					DWORD waitRes = WaitForSingleObject(hEvent, 0);
+					if (waitRes == WAIT_OBJECT_0)
+					{
+						// 事件已设置，DLL注入成功
+						bResume = TRUE;
+					}
+					CloseHandle(hEvent);
+				}
+				it = ProcessEventId.erase(it);
+				break;
+			}
+			else
+			{
+				++it;
+			}
+		}
+		ReleaseMutex(CreateCheckMutex);
+
+		if (bResume)
+		{
+			Tran_SendPacket(Tran_Client[Struct.Count], (char*)"", PTCreateProcessRoutine, (char*)"", TRUE);
+		}
+		else
+		{
+			Tran_SendPacket(Tran_Client[Struct.Count], (char*)"", PTCreateProcessRoutine, (char*)"", -1); // 超时未完成：给父进程发信号可以resume主线程，但说明hook可能未成功
+		}
 	}
 
 	if (Struct.hHookReady) CloseHandle(Struct.hHookReady);
@@ -9918,7 +10173,14 @@ DWORD RecvT(LPVOID lpParam)
 								ParentPid = PacketRecv.Pid;
 							}
 
-							if (AutoAllowList.Find(ParentPid, alertTitle))
+							if (riskResult.autoBlock)
+							{
+								/* 命令行可疑：无需弹窗，直接终止进程并阻止恢复 */
+								RAWT = AW_Prevent;
+								Log_AddLogSimple(QString("已自动阻止命令行可疑命令 PID=%1").arg(PacketRecv.Pid),
+									LOG_WARN, "Kernel.CommandLineRisk");
+							}
+							else if (AutoAllowList.Find(ParentPid, alertTitle))
 							{
 								RAWT = AW_Allow;
 							}

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // Sandbox.h - C++ Script Behavior Analysis Sandbox
 // Provides dynamic behavior-chain based detection for PowerShell/CMD mixed scripts.
 // All operations are simulated; no real system state is touched.
@@ -54,7 +54,11 @@ public:
     ~Sandbox();
 
     // Analyze a script (PowerShell, CMD, or mixed). Returns detection result.
-    DetectionResult Analyze(const std::string& script_content);
+    // Language is inferred from content when no hint is given.
+    DetectionResult Analyze(const std::string& script_content, const std::string& fileExt = "");
+
+    // Analyze a script file directly from path, using extension to determine language.
+    DetectionResult AnalyzeFile(const std::string& filePath);
 
 private:
     class Impl;
